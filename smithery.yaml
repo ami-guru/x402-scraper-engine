@@ -1,7 +1,7 @@
 name: x402-scraper-engine
 version: 1.0.0
 description: Production HTTP 402 Web3 Microtransaction Scraper & Markdown Converter for AI Agents on Base L2
-repository: https://github.com/asot-investment/x402-scraper-engine
+repository: https://github.com/ami-guru/x402-scraper-engine
 homepage: https://getguruautomations.com
 license: MIT
 startCommand:

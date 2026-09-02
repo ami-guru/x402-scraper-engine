@@ -187,7 +187,7 @@ export default {
             recipient: env.TREASURY_WALLET_ADDRESS,
             windowSeconds: Number(env.PAYMENT_WINDOW_SECONDS || 900)
           },
-          docs: 'https://github.com/asot-investment/x402-scraper-engine',
+          docs: 'https://github.com/ami-guru/x402-scraper-engine',
           openapi: `${url.origin}/openapi.json`,
           mcp: `${url.origin}/mcp.json`
         });

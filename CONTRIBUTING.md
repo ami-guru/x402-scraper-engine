@@ -14,7 +14,7 @@ All contributors are expected to follow our [Code of Conduct](CODE_OF_CONDUCT.md
 
 1. **Fork and Clone:**
    ```bash
-   git clone https://github.com/asot-investment/x402-scraper-engine.git
+   git clone https://github.com/ami-guru/x402-scraper-engine.git
    cd x402-scraper-engine
    ```
 

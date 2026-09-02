@@ -17,11 +17,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/asot-investment/x402-scraper-engine.git"
+    "url": "https://github.com/ami-guru/x402-scraper-engine.git"
   },
   "homepage": "https://getguruautomations.com",
   "bugs": {
-    "url": "https://github.com/asot-investment/x402-scraper-engine/issues"
+    "url": "https://github.com/ami-guru/x402-scraper-engine/issues"
   },
   "keywords": [
     "http402",
