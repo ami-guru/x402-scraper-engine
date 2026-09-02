@@ -1,0 +1,17 @@
+{
+  "schema_version": "v1",
+  "name_for_human": "x402 Markdown Web Scraper",
+  "name_for_model": "clean_web_scrape",
+  "description_for_human": "Pay-per-call web scraper converting pages to token-efficient markdown via 0.002 USDC on Base.",
+  "description_for_model": "Scrapes web pages, strips scripts/styles/SVGs/base64, converts to token-efficient markdown. Automatically settles via HTTP 402 with 0.002 USDC on Base.",
+  "auth": {
+    "type": "none"
+  },
+  "api": {
+    "type": "openapi",
+    "url": "https://x402-scraper-engine.gejoe-tt.workers.dev/openapi.json"
+  },
+  "logo_url": "https://getguruautomations.com/favicon.ico",
+  "contact_email": "ops@getguruautomations.com",
+  "legal_info_url": "https://getguruautomations.com/terms"
+}

@@ -1,0 +1,28 @@
+name: x402-scraper-engine
+version: 1.0.0
+description: Production HTTP 402 Web3 Microtransaction Scraper & Markdown Converter for AI Agents on Base L2
+repository: https://github.com/asot-investment/x402-scraper-engine
+homepage: https://getguruautomations.com
+license: MIT
+startCommand:
+  type: stdio
+  config:
+    command: npx
+    args:
+      - tsx
+      - client/mcp-server.ts
+    env:
+      WORKER_URL: https://x402-scraper-engine.gejoe-tt.workers.dev
+      BASE_RPC_URL: https://mainnet.base.org
+      AGENT_PRIVATE_KEY: ""
+tools:
+  - name: clean_web_scrape
+    description: Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown for LLM ingestion with autonomous HTTP 402 micro-settlement on Base.
+    parameters:
+      type: object
+      properties:
+        url:
+          type: string
+          description: The target webpage URL to scrape.
+      required:
+        - url

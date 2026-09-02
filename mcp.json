@@ -1,0 +1,32 @@
+{
+  "name": "x402-scraper-engine",
+  "version": "1.0.0",
+  "description": "HTTP 402 Micropayment Web Scraper & Markdown Conversion Tool for AI Agents on Base L2",
+  "tools": [
+    {
+      "name": "clean_web_scrape",
+      "description": "Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown for LLM ingestion. Automatically handles HTTP 402 microtransactions (0.002 USDC on Base) if required.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The target webpage URL to scrape (e.g. https://news.ycombinator.com)."
+          }
+        },
+        "required": ["url"]
+      }
+    }
+  ],
+  "mcpServers": {
+    "x402-scraper": {
+      "command": "node",
+      "args": ["dist/client/mcp-server.js"],
+      "env": {
+        "WORKER_URL": "https://x402-scraper-engine.gejoe-tt.workers.dev",
+        "BASE_RPC_URL": "https://mainnet.base.org",
+        "AGENT_PRIVATE_KEY": "0x..."
+      }
+    }
+  }
+}

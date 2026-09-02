@@ -1,0 +1,55 @@
+{
+  "name": "x402-scraper-engine",
+  "version": "1.0.0",
+  "description": "Production HTTP 402 Web3 Microtransaction Scraper & Model Context Protocol (MCP) Server for AI Agents on Base L2",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "bin": {
+    "x402-mcp": "./dist/client/mcp-server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "tsx test/mock-harness.ts",
+    "test:live": "tsx test/test-live.ts",
+    "mcp": "tsx client/mcp-server.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/asot-investment/x402-scraper-engine.git"
+  },
+  "homepage": "https://getguruautomations.com",
+  "bugs": {
+    "url": "https://github.com/asot-investment/x402-scraper-engine/issues"
+  },
+  "keywords": [
+    "http402",
+    "web3",
+    "base",
+    "usdc",
+    "mcp",
+    "model-context-protocol",
+    "cloudflare-workers",
+    "ai-agent",
+    "web-scraper",
+    "markdown",
+    "agentkit",
+    "smithery"
+  ],
+  "author": "ASOT Marketing and Investment <ops@getguruautomations.com>",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.1",
+    "dotenv": "^16.4.7",
+    "viem": "^2.23.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250224.0",
+    "@types/node": "^22.13.8",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "wrangler": "^3.111.0"
+  }
+}

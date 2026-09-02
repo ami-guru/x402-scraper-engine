@@ -1,0 +1,42 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schema/server.json",
+  "name": "x402-scraper-engine",
+  "title": "x402 Web3 Microtransaction Scraper",
+  "description": "Production HTTP 402 Web3 Microtransaction Scraper & Markdown Converter for AI Agents on Base L2 (0.002 USDC per scrape).",
+  "version": "1.0.0",
+  "author": {
+    "name": "ASOT Marketing and Investment",
+    "url": "https://getguruautomations.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/asot-investment/x402-scraper-engine"
+  },
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "web-scraping",
+    "http402",
+    "base",
+    "usdc",
+    "microtransactions",
+    "ai-agent",
+    "markdown"
+  ],
+  "tools": [
+    {
+      "name": "clean_web_scrape",
+      "description": "Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown for LLM ingestion. Automatically handles HTTP 402 microtransactions (0.002 USDC on Base) if required.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The target webpage URL to scrape."
+          }
+        },
+        "required": ["url"]
+      }
+    }
+  ]
+}

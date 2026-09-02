@@ -1,0 +1,28 @@
+name = "x402-scraper-engine"
+main = "src/index.ts"
+compatibility_date = "2024-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+account_id = "75cc59b8b211f559e26f6f4218269fc5"
+
+# Cloudflare KV Namespace for 24h Replay Prevention
+[[kv_namespaces]]
+binding = "PROCESSED_TXS"
+id = "3a71b4e183134bbc89dd378cfbf88f32"
+preview_id = "b51912cf95a745bfbeb83eada646d6b1"
+
+[vars]
+# Network & Settlement Configuration
+NETWORK = "base"
+CHAIN_ID = 8453
+USDC_CONTRACT_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+PRICE_USDC = "0.002"
+PRICE_USDC_UNITS = "2000" # 0.002 * 10^6
+PAYMENT_WINDOW_SECONDS = 900 # 15 minutes max receipt age
+REPLAY_EXPIRATION_SECONDS = 86400 # 24 hours in KV
+
+# Base RPC Endpoint (Public or private provider)
+BASE_RPC_URL = "https://mainnet.base.org"
+
+# Treasury Wallet - User Receiving Address on Base L2
+TREASURY_WALLET_ADDRESS = "0x4107f297256E00F32873f45F50A35a902c1c2034"

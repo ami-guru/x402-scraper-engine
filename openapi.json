@@ -1,0 +1,142 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "x402 Web3 Microtransaction Scraper API",
+    "description": "Production HTTP 402 Web3 Microtransaction Scraper & Markdown Conversion Service for Autonomous AI Agents on Base L2.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "ASOT Marketing and Investment",
+      "url": "https://getguruautomations.com",
+      "email": "ops@getguruautomations.com"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://x402-scraper-engine.gejoe-tt.workers.dev",
+      "description": "Cloudflare Global Edge Production Server"
+    }
+  ],
+  "paths": {
+    "/v1/scrape": {
+      "post": {
+        "summary": "Scrape URL and convert to token-efficient Markdown",
+        "description": "Fetches target URL, strips JavaScript, CSS, SVG, and base64 bloat, converts to clean Markdown, and verifies on-chain microtransaction payment (0.002 USDC on Base L2).",
+        "operationId": "cleanWebScrape",
+        "parameters": [
+          {
+            "name": "X-Payment-Receipt",
+            "in": "header",
+            "required": false,
+            "description": "Base L2 Transaction hash proving 0.002 USDC transfer to treasury.",
+            "schema": {
+              "type": "string",
+              "example": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "Target webpage URL to scrape.",
+                    "example": "https://news.ycombinator.com"
+                  }
+                },
+                "required": ["url"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful scrape and markdown extraction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "url": { "type": "string", "example": "https://news.ycombinator.com" },
+                    "title": { "type": "string", "example": "Hacker News" },
+                    "markdown": { "type": "string", "example": "# Hacker News\n\n- [Story 1](https://...)" },
+                    "tokens_estimated": { "type": "integer", "example": 240 },
+                    "payment": {
+                      "type": "object",
+                      "properties": {
+                        "tx_hash": { "type": "string" },
+                        "network": { "type": "string", "example": "base" },
+                        "amount": { "type": "string", "example": "0.002" },
+                        "asset": { "type": "string", "example": "USDC" },
+                        "settled_at": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Payment Required - Microtransaction Challenge",
+            "headers": {
+              "X-Payment-Version": { "schema": { "type": "string", "example": "1" } },
+              "X-Payment-Network": { "schema": { "type": "string", "example": "base" } },
+              "X-Payment-Chain-Id": { "schema": { "type": "string", "example": "8453" } },
+              "X-Payment-Asset": { "schema": { "type": "string", "example": "USDC" } },
+              "X-Payment-Asset-Address": { "schema": { "type": "string", "example": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" } },
+              "X-Payment-Amount": { "schema": { "type": "string", "example": "0.002" } },
+              "X-Payment-To": { "schema": { "type": "string", "example": "0x4107f297256E00F32873f45F50A35a902c1c2034" } },
+              "X-Payment-Window": { "schema": { "type": "string", "example": "900" } }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": { "type": "string", "example": "Payment Required" },
+                    "message": { "type": "string" },
+                    "payment": {
+                      "type": "object",
+                      "properties": {
+                        "version": { "type": "integer", "example": 1 },
+                        "network": { "type": "string", "example": "base" },
+                        "chainId": { "type": "integer", "example": 8453 },
+                        "asset": { "type": "string", "example": "USDC" },
+                        "contractAddress": { "type": "string", "example": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" },
+                        "amount": { "type": "string", "example": "0.002" },
+                        "recipient": { "type": "string", "example": "0x4107f297256E00F32873f45F50A35a902c1c2034" },
+                        "windowSeconds": { "type": "integer", "example": 900 }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request, SSRF violation, or Replay detected"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health and protocol status",
+        "responses": {
+          "200": {
+            "description": "Service operational status and pricing configuration"
+          }
+        }
+      }
+    }
+  }
+}
