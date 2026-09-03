@@ -30,6 +30,44 @@ function topicToAddress(topic: string): string {
 }
 
 /**
+ * Formats standard x402 V2 and backward-compatible payment headers
+ */
+export function createPaymentChallengeHeaders(config: {
+  amountUsdc: string;
+  recipient: string;
+  network?: string;
+  chainId?: number | string;
+  contractAddress?: string;
+  windowSeconds?: number | string;
+}): Record<string, string> {
+  const v2Payload = {
+    x402_version: '2.0',
+    network: config.network || 'base',
+    chain_id: Number(config.chainId || 8453),
+    asset: 'USDC',
+    contract_address: config.contractAddress || DEFAULT_USDC_BASE,
+    amount_usdc: config.amountUsdc,
+    recipient: config.recipient,
+    max_receipt_age_seconds: Number(config.windowSeconds || 900)
+  };
+
+  const jsonStr = JSON.stringify(v2Payload);
+  const base64V2 = typeof btoa === 'function' ? btoa(jsonStr) : Buffer.from(jsonStr).toString('base64');
+
+  return {
+    'PAYMENT-REQUIRED': base64V2,
+    'X-Payment-Version': '2',
+    'X-Payment-Network': config.network || 'base',
+    'X-Payment-Chain-Id': String(config.chainId || 8453),
+    'X-Payment-Asset': 'USDC',
+    'X-Payment-Asset-Address': config.contractAddress || DEFAULT_USDC_BASE,
+    'X-Payment-Amount': config.amountUsdc,
+    'X-Payment-To': config.recipient,
+    'X-Payment-Window': String(config.windowSeconds || 900)
+  };
+}
+
+/**
  * Perform on-chain verification of a transaction receipt on Base
  */
 export async function verifyBasePayment(

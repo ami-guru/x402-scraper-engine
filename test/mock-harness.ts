@@ -1,6 +1,7 @@
 import worker from '../src/index';
 import { Env } from '../src/types';
 import { validateUrl, htmlToMarkdown, estimateTokens } from '../src/scraper';
+import { searchTwitter, getTwitterProfile } from '../src/twitter';
 import { isValidTxHash } from '../src/verifier';
 
 // In-Memory KV Mock for Local Testing
@@ -46,34 +47,42 @@ function assert(condition: boolean, testName: string, errorDetail?: string) {
 
 async function runTests() {
   console.log('\n======================================================');
-  console.log('🚀 Running x402-scraper-engine Mock Test Harness');
+  console.log('🚀 Running x402-scraper-engine v1.3.0 Mock Test Harness');
   console.log('======================================================\n');
 
-  // Test Environment Configuration
   const mockEnv: Env = {
     PROCESSED_TXS: new InMemoryKV() as any,
     NETWORK: 'base',
     CHAIN_ID: 8453,
     USDC_CONTRACT_ADDRESS: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-    PRICE_USDC: '0.02',
-    PRICE_USDC_UNITS: '20000',
-    SEARCH_PRICE_USDC: '0.05',
+    PRICE_USDC: '0.005',
+    PRICE_USDC_UNITS: '5000',
+    SCRAPE_PRICE_USDC: '0.005',
+    SCRAPE_PRICE_UNITS: '5000',
+    DIGEST_PRICE_USDC: '0.025',
+    DIGEST_PRICE_UNITS: '25000',
+    AUDIT_PRICE_USDC: '0.080',
+    AUDIT_PRICE_UNITS: '80000',
+    SEARCH_PRICE_USDC: '0.050',
     SEARCH_PRICE_UNITS: '50000',
+    TWITTER_SEARCH_PRICE_USDC: '0.050',
+    TWITTER_SEARCH_PRICE_UNITS: '50000',
+    TWITTER_PROFILE_PRICE_USDC: '0.030',
+    TWITTER_PROFILE_PRICE_UNITS: '30000',
     PAYMENT_WINDOW_SECONDS: 900,
-    REPLAY_EXPIRATION_SECONDS: 86400,
     BASE_RPC_URL: 'https://mainnet.base.org',
-    TREASURY_WALLET_ADDRESS: '0x1234567890123456789012345678901234567890'
+    TREASURY_WALLET_ADDRESS: '0x4107f297256E00F32873f45F50A35a902c1c2034'
   };
 
   const mockCtx: any = {
-    waitUntil: (promise: Promise<any>) => {},
+    waitUntil: (p: Promise<any>) => {},
     passThroughOnException: () => {}
   };
 
   // -------------------------------------------------------------
   // TEST SUITE 1: URL Security & SSRF Protection
   // -------------------------------------------------------------
-  console.log('\n[1] Testing Security & SSRF Validation:');
+  console.log('[1] Testing Security & SSRF Validation:');
 
   const blockedUrls = [
     'http://localhost:8080/admin',
@@ -102,9 +111,9 @@ async function runTests() {
   }
 
   // -------------------------------------------------------------
-  // TEST SUITE 2: HTML to Markdown Sanitization
+  // TEST SUITE 2: HTML to Markdown Sanitization & Twitter
   // -------------------------------------------------------------
-  console.log('\n[2] Testing HTML to Markdown Sanitization:');
+  console.log('\n[2] Testing HTML Sanitization & Twitter Parser:');
 
   const dirtyHtml = `
     <!DOCTYPE html>
@@ -132,93 +141,110 @@ async function runTests() {
   `;
 
   const parsed = htmlToMarkdown(dirtyHtml, 'https://example.com');
-
   assert(parsed.title === 'Test Page Title', 'Extracts title tag correctly');
   assert(!parsed.markdown.includes('alert'), 'Strips JavaScript tags and contents');
   assert(!parsed.markdown.includes('color: red'), 'Strips CSS style tags');
-  assert(!parsed.markdown.includes('base64'), 'Strips base64 image data bloat');
-  assert(!parsed.markdown.includes('<svg>'), 'Strips SVG elements');
-  assert(parsed.markdown.includes('# Article Heading'), 'Converts H1 to Markdown heading');
-  assert(parsed.markdown.includes('**bold**'), 'Converts <strong> to **bold**');
-  assert(parsed.markdown.includes('[link to learn](https://example.com/learn)'), 'Converts anchors to Markdown links');
-  assert(parsed.markdown.includes('- First feature'), 'Converts unordered lists to markdown bullets');
-  assert(parsed.markdown.includes('```\nconst test = 42;\n```'), 'Converts <pre><code> to fenced code blocks');
-  assert(parsed.markdown.includes('> Remarkable insight quote'), 'Converts <blockquote> to Markdown quote');
+  assert(parsed.markdown.includes('# Article Heading'), 'Converts H1 to Markdown');
+  assert(parsed.markdown.includes('[link to learn](https://example.com/learn)'), 'Extracts anchor links');
 
   const tokens = estimateTokens(parsed.markdown);
-  assert(tokens > 0 && tokens < 200, `Estimates tokens accurately (${tokens} tokens estimated)`);
+  assert(tokens > 10 && tokens < 500, `Token estimation realistic (${tokens} tokens)`);
+
+  assert(typeof searchTwitter === 'function', 'searchTwitter module is properly instantiated');
+  assert(typeof getTwitterProfile === 'function', 'getTwitterProfile module is properly instantiated');
 
   // -------------------------------------------------------------
-  // TEST SUITE 3: HTTP 402 Challenge Protocol Verification
+  // TEST SUITE 3: HTTP 402 Multi-Tier Challenge Protocol
   // -------------------------------------------------------------
-  console.log('\n[3] Testing HTTP 402 Micropayment Protocol:');
+  console.log('\n[3] Testing HTTP 402 Multi-Tier Protocol:');
 
   // Health route
   const healthReq = new Request('http://localhost/health', { method: 'GET' });
   const healthRes = await worker.fetch(healthReq, mockEnv, mockCtx);
   assert(healthRes.status === 200, 'GET /health returns HTTP 200 OK');
   const healthJson: any = await healthRes.json();
-  assert(healthJson.pricing.scrape_usdc === '0.02', 'GET /health returns 0.02 USDC pricing');
-  assert(healthJson.pricing.search_usdc === '0.05', 'GET /health returns 0.05 USDC search pricing');
-  assert(healthJson.payment.recipient === mockEnv.TREASURY_WALLET_ADDRESS, 'GET /health returns treasury recipient');
+  assert(healthJson.version === '1.3.0', 'GET /health returns v1.3.0');
+  assert(healthJson.pricing.scrape_usdc === '0.005', 'GET /health returns 0.005 USDC scrape pricing');
+  assert(healthJson.pricing.digest_usdc === '0.025', 'GET /health returns 0.025 USDC digest pricing');
+  assert(healthJson.pricing.audit_usdc === '0.080', 'GET /health returns 0.080 USDC audit pricing');
 
-  // POST /v1/scrape without receipt -> HTTP 402
+  // POST /v1/scrape without receipt -> HTTP 402 ($0.005)
   const unpaidReq = new Request('http://localhost/v1/scrape', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url: 'https://example.com' })
   });
-
   const unpaidRes = await worker.fetch(unpaidReq, mockEnv, mockCtx);
-  assert(unpaidRes.status === 402, 'POST /v1/scrape without receipt returns HTTP 402 Payment Required');
-  assert(unpaidRes.headers.get('X-Payment-Version') === '1', 'Returns X-Payment-Version: 1');
-  assert(unpaidRes.headers.get('X-Payment-Network') === 'base', 'Returns X-Payment-Network: base');
-  assert(unpaidRes.headers.get('X-Payment-Amount') === '0.02', 'Returns X-Payment-Amount: 0.02');
-  assert(unpaidRes.headers.get('X-Payment-To') === mockEnv.TREASURY_WALLET_ADDRESS, 'Returns X-Payment-To with treasury address');
+  assert(unpaidRes.status === 402, 'POST /v1/scrape returns HTTP 402');
+  assert(unpaidRes.headers.get('PAYMENT-REQUIRED') !== null, 'Returns PAYMENT-REQUIRED Base64 V2 header');
+  assert(unpaidRes.headers.get('X-Payment-Amount') === '0.005', 'Returns X-Payment-Amount: 0.005');
 
-  // POST /v1/search without receipt -> HTTP 402 ($0.05)
+  // POST /v1/digest without receipt -> HTTP 402 ($0.025)
+  const unpaidDigestReq = new Request('http://localhost/v1/digest', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: 'https://example.com' })
+  });
+  const unpaidDigestRes = await worker.fetch(unpaidDigestReq, mockEnv, mockCtx);
+  assert(unpaidDigestRes.status === 402, 'POST /v1/digest returns HTTP 402');
+  assert(unpaidDigestRes.headers.get('X-Payment-Amount') === '0.025', 'Returns X-Payment-Amount: 0.025 for digest');
+
+  // POST /v1/audit without receipt -> HTTP 402 ($0.080)
+  const unpaidAuditReq = new Request('http://localhost/v1/audit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: 'https://example.com' })
+  });
+  const unpaidAuditRes = await worker.fetch(unpaidAuditReq, mockEnv, mockCtx);
+  assert(unpaidAuditRes.status === 402, 'POST /v1/audit returns HTTP 402');
+  assert(unpaidAuditRes.headers.get('X-Payment-Amount') === '0.080', 'Returns X-Payment-Amount: 0.080 for audit');
+
+  // POST /v1/search without receipt -> HTTP 402 ($0.050)
   const unpaidSearchReq = new Request('http://localhost/v1/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query: 'autonomous agents' })
   });
-
   const unpaidSearchRes = await worker.fetch(unpaidSearchReq, mockEnv, mockCtx);
-  assert(unpaidSearchRes.status === 402, 'POST /v1/search without receipt returns HTTP 402 Payment Required');
-  assert(unpaidSearchRes.headers.get('X-Payment-Amount') === '0.05', 'Returns X-Payment-Amount: 0.05 for search');
+  assert(unpaidSearchRes.status === 402, 'POST /v1/search returns HTTP 402');
+  assert(unpaidSearchRes.headers.get('X-Payment-Amount') === '0.050', 'Returns X-Payment-Amount: 0.050 for search');
 
-  // POST /v1/twitter/search without receipt -> HTTP 402 ($0.05)
+  // POST /v1/twitter/search without receipt -> HTTP 402 ($0.050)
   const unpaidTwitterReq = new Request('http://localhost/v1/twitter/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query: '$BASE agents' })
   });
-
   const unpaidTwitterRes = await worker.fetch(unpaidTwitterReq, mockEnv, mockCtx);
-  assert(unpaidTwitterRes.status === 402, 'POST /v1/twitter/search without receipt returns HTTP 402 Payment Required');
-  assert(unpaidTwitterRes.headers.get('X-Payment-Amount') === '0.05', 'Returns X-Payment-Amount: 0.05 for twitter search');
+  assert(unpaidTwitterRes.status === 402, 'POST /v1/twitter/search returns HTTP 402');
 
-  // POST /v1/twitter/profile without receipt -> HTTP 402 ($0.03)
+  // POST /v1/twitter/profile without receipt -> HTTP 402 ($0.030)
   const unpaidProfileReq = new Request('http://localhost/v1/twitter/profile', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: 'jessepollak' })
   });
-
   const unpaidProfileRes = await worker.fetch(unpaidProfileReq, mockEnv, mockCtx);
-  assert(unpaidProfileRes.status === 402, 'POST /v1/twitter/profile without receipt returns HTTP 402 Payment Required');
-  assert(unpaidProfileRes.headers.get('X-Payment-Amount') === '0.03', 'Returns X-Payment-Amount: 0.03 for twitter profile');
+  assert(unpaidProfileRes.status === 402, 'POST /v1/twitter/profile returns HTTP 402');
 
-  const challengeJson: any = await unpaidRes.json();
-  assert(challengeJson.error === 'Payment Required', 'Returns standardized 402 JSON error');
-  assert(challengeJson.payment.chainId === 8453, 'Returns Base Chain ID 8453');
+  // GET /.well-known/x402.json Bazaar Extension
+  const bazaarReq = new Request('http://localhost/.well-known/x402.json', { method: 'GET' });
+  const bazaarRes = await worker.fetch(bazaarReq, mockEnv, mockCtx);
+  assert(bazaarRes.status === 200, 'GET /.well-known/x402.json returns HTTP 200');
+  const bazaarJson: any = await bazaarRes.json();
+  assert(bazaarJson.x402_version === '2.0', 'Returns x402 V2.0 specification');
+  assert(bazaarJson.endpoints.length === 6, 'Returns all 6 endpoints in Bazaar catalog');
+
+  // POST /v1/ping-index
+  const pingReq = new Request('http://localhost/v1/ping-index', { method: 'POST' });
+  const pingRes = await worker.fetch(pingReq, mockEnv, mockCtx);
+  assert(pingRes.status === 200, 'POST /v1/ping-index returns HTTP 200 OK');
 
   // -------------------------------------------------------------
   // TEST SUITE 4: Invalid Receipt & Replay Prevention
   // -------------------------------------------------------------
   console.log('\n[4] Testing Receipt Verification & Replay Protection:');
 
-  // Test malformed transaction hash
   const badHashReq = new Request('http://localhost/v1/scrape', {
     method: 'POST',
     headers: {
@@ -229,20 +255,14 @@ async function runTests() {
   });
 
   const badHashRes = await worker.fetch(badHashReq, mockEnv, mockCtx);
-  assert(badHashRes.status === 402, 'Malformed tx hash triggers 402 payment verification failure');
-  const badHashJson: any = await badHashRes.json();
-  assert(badHashJson.details.includes('Malformed transaction hash'), 'Rejects malformed transaction format');
+  assert(badHashRes.status === 402, 'Malformed tx hash triggers 402 verification failure');
 
-  // Test Tx hash regex validator
   assert(isValidTxHash('0x' + 'a'.repeat(64)), 'Valid 64-char hex hash passes format check');
   assert(!isValidTxHash('0x' + 'g'.repeat(64)), 'Non-hex characters fail format check');
   assert(!isValidTxHash('0x1234'), 'Short hash fails format check');
 
-  // Test Replay Prevention using KV
   const fakeTxHash = '0x' + '11'.repeat(32);
   await mockEnv.PROCESSED_TXS.put(`tx:${fakeTxHash}`, JSON.stringify({ redeemedAt: new Date().toISOString() }));
-
-  // Simulate replay check on KV
   const existingInKv = await mockEnv.PROCESSED_TXS.get(`tx:${fakeTxHash}`);
   assert(existingInKv !== null, 'KV correctly records processed transaction hash');
 

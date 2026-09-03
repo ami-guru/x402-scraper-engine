@@ -61,13 +61,51 @@ class X402ScraperMcpServer {
         {
           name: 'clean_web_scrape',
           description:
-            'Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown for LLM ingestion. Automatically handles HTTP 402 microtransactions (0.02 USDC on Base) if required.',
+            'Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown for LLM ingestion. Automatically handles HTTP 402 microtransactions (0.005 USDC on Base) if required.',
           inputSchema: {
             type: 'object',
             properties: {
               url: {
                 type: 'string',
                 description: 'The target webpage URL to scrape (must start with http:// or https://).'
+              }
+            },
+            required: ['url']
+          }
+        },
+        {
+          name: 'synthesize_web_digest',
+          description:
+            'Scrapes target webpage and executes Edge LLM (Llama 3) context synthesis to extract executive summary, key takeaways, and structured entities. Automatically handles HTTP 402 microtransactions (0.025 USDC on Base).',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'The webpage URL to synthesize.'
+              },
+              focus: {
+                type: 'string',
+                description: 'Optional focus area or specific query for the synthesis.'
+              }
+            },
+            required: ['url']
+          }
+        },
+        {
+          name: 'audit_web_signal',
+          description:
+            'Performs security, credibility, and phishing risk analysis for any website or smart contract landing page. Returns credibility score (0-100) and risk signals. Automatically handles HTTP 402 microtransactions (0.080 USDC on Base).',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'The webpage URL to audit for security signals.'
+              },
+              contract_address: {
+                type: 'string',
+                description: 'Optional 0x EVM smart contract address to verify alongside the web page.'
               }
             },
             required: ['url']
@@ -144,6 +182,34 @@ class X402ScraperMcpServer {
           return { content: [{ type: 'text', text: result }] };
         } catch (error: any) {
           return { isError: true, content: [{ type: 'text', text: `Scrape Error: ${error.message}` }] };
+        }
+      }
+
+      if (toolName === 'synthesize_web_digest') {
+        const args = request.params.arguments as { url?: string; focus?: string };
+        if (!args || !args.url) {
+          throw new McpError(ErrorCode.InvalidParams, 'Missing "url" parameter.');
+        }
+
+        try {
+          const result = await this.executeDigestWithAutoPayment(args.url, args.focus);
+          return { content: [{ type: 'text', text: result }] };
+        } catch (error: any) {
+          return { isError: true, content: [{ type: 'text', text: `Digest Error: ${error.message}` }] };
+        }
+      }
+
+      if (toolName === 'audit_web_signal') {
+        const args = request.params.arguments as { url?: string; contract_address?: string };
+        if (!args || !args.url) {
+          throw new McpError(ErrorCode.InvalidParams, 'Missing "url" parameter.');
+        }
+
+        try {
+          const result = await this.executeAuditWithAutoPayment(args.url, args.contract_address);
+          return { content: [{ type: 'text', text: result }] };
+        } catch (error: any) {
+          return { isError: true, content: [{ type: 'text', text: `Audit Error: ${error.message}` }] };
         }
       }
 
@@ -273,6 +339,136 @@ class X402ScraperMcpServer {
     // Other HTTP Error
     const errText = await initialRes.text();
     throw new Error(`Scraper returned HTTP ${initialRes.status}: ${errText}`);
+  }
+
+  /**
+   * Performs Edge LLM context synthesis, auto-settling 0.025 USDC on Base if 402 is returned
+   */
+  private async executeDigestWithAutoPayment(targetUrl: string, focus?: string): Promise<string> {
+    const digestEndpoint = `${WORKER_URL.replace(/\/$/, '')}/v1/digest`;
+
+    let initialRes = await fetch(digestEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: targetUrl, focus })
+    });
+
+    if (initialRes.status === 200) {
+      const data: any = await initialRes.json();
+      return formatMarkdownOutput(data);
+    }
+
+    if (initialRes.status === 402) {
+      const paymentData: any = await initialRes.json().catch(() => ({}));
+      const recipient =
+        initialRes.headers.get('X-Payment-To') ||
+        paymentData.payment?.recipient ||
+        process.env.TREASURY_WALLET_ADDRESS;
+      const amount = initialRes.headers.get('X-Payment-Amount') || paymentData.payment?.amount || '0.025';
+      const tokenAddress: Address =
+        (initialRes.headers.get('X-Payment-Asset-Address') as Address) ||
+        (paymentData.payment?.contractAddress as Address) ||
+        DEFAULT_USDC_BASE;
+
+      if (!recipient || recipient === '0x0000000000000000000000000000000000000000') {
+        throw new Error('HTTP 402 received, but treasury address is not configured on worker.');
+      }
+
+      if (!AGENT_PRIVATE_KEY || AGENT_PRIVATE_KEY.startsWith('0x000000000000')) {
+        throw new Error(
+          `HTTP 402 Payment Required: Edge LLM digest charges ${amount} USDC on Base.\n` +
+          `Recipient: ${recipient}\n` +
+          `Please configure a funded AGENT_PRIVATE_KEY in .env to proceed.`
+        );
+      }
+
+      const txHash = await this.sendUsdcPayment(recipient as Address, amount, tokenAddress);
+
+      const paidRes = await fetch(digestEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Payment-Receipt': txHash
+        },
+        body: JSON.stringify({ url: targetUrl, focus })
+      });
+
+      if (!paidRes.ok) {
+        const errorBody: any = await paidRes.json().catch(() => ({}));
+        throw new Error(`Digest failed after payment (${txHash}): ${errorBody.details || errorBody.error || paidRes.statusText}`);
+      }
+
+      const paidData: any = await paidRes.json();
+      return formatMarkdownOutput(paidData);
+    }
+
+    const errText = await initialRes.text();
+    throw new Error(`Digest endpoint returned HTTP ${initialRes.status}: ${errText}`);
+  }
+
+  /**
+   * Performs Security and Credibility Audit, auto-settling 0.080 USDC on Base if 402 is returned
+   */
+  private async executeAuditWithAutoPayment(targetUrl: string, contractAddress?: string): Promise<string> {
+    const auditEndpoint = `${WORKER_URL.replace(/\/$/, '')}/v1/audit`;
+
+    let initialRes = await fetch(auditEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: targetUrl, contract_address: contractAddress })
+    });
+
+    if (initialRes.status === 200) {
+      const data: any = await initialRes.json();
+      return formatMarkdownOutput(data);
+    }
+
+    if (initialRes.status === 402) {
+      const paymentData: any = await initialRes.json().catch(() => ({}));
+      const recipient =
+        initialRes.headers.get('X-Payment-To') ||
+        paymentData.payment?.recipient ||
+        process.env.TREASURY_WALLET_ADDRESS;
+      const amount = initialRes.headers.get('X-Payment-Amount') || paymentData.payment?.amount || '0.080';
+      const tokenAddress: Address =
+        (initialRes.headers.get('X-Payment-Asset-Address') as Address) ||
+        (paymentData.payment?.contractAddress as Address) ||
+        DEFAULT_USDC_BASE;
+
+      if (!recipient || recipient === '0x0000000000000000000000000000000000000000') {
+        throw new Error('HTTP 402 received, but treasury address is not configured on worker.');
+      }
+
+      if (!AGENT_PRIVATE_KEY || AGENT_PRIVATE_KEY.startsWith('0x000000000000')) {
+        throw new Error(
+          `HTTP 402 Payment Required: Security audit charges ${amount} USDC on Base.\n` +
+          `Recipient: ${recipient}\n` +
+          `Please configure a funded AGENT_PRIVATE_KEY in .env to proceed.`
+        );
+      }
+
+      const txHash = await this.sendUsdcPayment(recipient as Address, amount, tokenAddress);
+
+      const paidRes = await fetch(auditEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Payment-Receipt': txHash
+        },
+        body: JSON.stringify({ url: targetUrl, contract_address: contractAddress })
+      });
+
+      if (!paidRes.ok) {
+        const errorBody: any = await paidRes.json().catch(() => ({}));
+        throw new Error(`Security audit failed after payment (${txHash}): ${errorBody.details || errorBody.error || paidRes.statusText}`);
+      }
+
+      const paidData: any = await paidRes.json();
+      return formatMarkdownOutput(paidData);
+    }
+
+    const errText = await initialRes.text();
+    throw new Error(`Audit endpoint returned HTTP ${initialRes.status}: ${errText}`);
   }
 
   /**

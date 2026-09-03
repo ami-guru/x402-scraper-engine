@@ -1,10 +1,17 @@
 export interface Env {
   PROCESSED_TXS: KVNamespace;
+  AI?: any;
   NETWORK?: string;
   CHAIN_ID?: string | number;
   USDC_CONTRACT_ADDRESS?: string;
   PRICE_USDC?: string;
   PRICE_USDC_UNITS?: string;
+  SCRAPE_PRICE_USDC?: string;
+  SCRAPE_PRICE_UNITS?: string;
+  DIGEST_PRICE_USDC?: string;
+  DIGEST_PRICE_UNITS?: string;
+  AUDIT_PRICE_USDC?: string;
+  AUDIT_PRICE_UNITS?: string;
   SEARCH_PRICE_USDC?: string;
   SEARCH_PRICE_UNITS?: string;
   TWITTER_SEARCH_PRICE_USDC?: string;
@@ -20,6 +27,16 @@ export interface Env {
 export interface ScrapeRequest {
   url: string;
   format?: 'markdown' | 'text';
+}
+
+export interface DigestRequest {
+  url: string;
+  focus?: string;
+}
+
+export interface AuditRequest {
+  url: string;
+  contract_address?: string;
 }
 
 export interface SearchRequest {
@@ -64,6 +81,48 @@ export interface TwitterProfileResponse {
   username: string;
   bio?: string;
   tweets: TweetItem[];
+  markdown: string;
+  tokens_estimated: number;
+  payment?: {
+    tx_hash: string;
+    network: string;
+    amount: string;
+    asset: string;
+    settled_at: string;
+  };
+}
+
+export interface DigestResponse {
+  success: boolean;
+  url: string;
+  title: string;
+  executive_summary: string;
+  key_takeaways: string[];
+  structured_entities?: Record<string, any>;
+  markdown: string;
+  tokens_estimated: number;
+  payment?: {
+    tx_hash: string;
+    network: string;
+    amount: string;
+    asset: string;
+    settled_at: string;
+  };
+}
+
+export interface AuditResponse {
+  success: boolean;
+  url: string;
+  credibility_score: number; // 0 - 100
+  risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  security_flags: string[];
+  credibility_analysis: string;
+  technical_signals: {
+    has_ssl: boolean;
+    has_external_scripts: boolean;
+    suspicious_redirects: boolean;
+    domain_reputation: string;
+  };
   markdown: string;
   tokens_estimated: number;
   payment?: {

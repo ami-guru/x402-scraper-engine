@@ -1,9 +1,9 @@
 {
   "$schema": "https://modelcontextprotocol.io/schema/server.json",
   "name": "x402-scraper-engine",
-  "title": "x402 Web3 Scraper, Deep Search & Twitter Intelligence",
-  "description": "Production HTTP 402 Web3 Microtransaction Scraper ($0.02), Deep Search ($0.05) & Twitter Intelligence ($0.05) for AI Agents on Base L2.",
-  "version": "1.2.0",
+  "title": "x402 Multi-Tier Agent Intelligence & Scraper Suite",
+  "description": "Production HTTP 402 Agent Intelligence Suite: Scraper ($0.005), Edge LLM Digest ($0.025), Security Audit ($0.080), Deep Search ($0.050), and Twitter/X Intelligence ($0.050) on Base L2.",
+  "version": "1.3.0",
   "author": {
     "name": "ASOT Marketing and Investment",
     "url": "https://getguruautomations.com"
@@ -16,6 +16,9 @@
   "keywords": [
     "mcp",
     "web-scraping",
+    "llama3",
+    "context-compression",
+    "security-audit",
     "deep-research",
     "twitter-search",
     "crypto-sentiment",
@@ -29,13 +32,49 @@
   "tools": [
     {
       "name": "clean_web_scrape",
-      "description": "Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown for LLM ingestion. Automatically handles HTTP 402 microtransactions (0.02 USDC on Base).",
+      "description": "Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown for LLM ingestion. Automatically handles HTTP 402 microtransactions (0.005 USDC on Base).",
       "inputSchema": {
         "type": "object",
         "properties": {
           "url": {
             "type": "string",
             "description": "The target webpage URL to scrape."
+          }
+        },
+        "required": ["url"]
+      }
+    },
+    {
+      "name": "synthesize_web_digest",
+      "description": "Scrapes target webpage and executes Edge LLM (Llama 3) context synthesis to extract executive summary, key takeaways, and structured entities (0.025 USDC on Base).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The webpage URL to synthesize."
+          },
+          "focus": {
+            "type": "string",
+            "description": "Optional focus area or specific query for the synthesis."
+          }
+        },
+        "required": ["url"]
+      }
+    },
+    {
+      "name": "audit_web_signal",
+      "description": "Performs security, credibility, and phishing risk analysis for any website or smart contract landing page. Returns credibility score (0-100) and risk signals (0.080 USDC on Base).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The webpage URL to audit for security signals."
+          },
+          "contract_address": {
+            "type": "string",
+            "description": "Optional 0x EVM smart contract address to verify alongside the web page."
           }
         },
         "required": ["url"]
