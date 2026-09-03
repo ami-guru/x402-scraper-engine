@@ -1,11 +1,11 @@
 {
   "name": "x402-scraper-engine",
-  "version": "1.0.0",
-  "description": "HTTP 402 Micropayment Web Scraper & Markdown Conversion Tool for AI Agents on Base L2",
+  "version": "1.1.0",
+  "description": "HTTP 402 Micropayment Web Scraper ($0.02 USDC) & Deep Search Tool ($0.05 USDC) for AI Agents on Base L2",
   "tools": [
     {
       "name": "clean_web_scrape",
-      "description": "Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown for LLM ingestion. Automatically handles HTTP 402 microtransactions (0.002 USDC on Base) if required.",
+      "description": "Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown for LLM ingestion. Automatically handles HTTP 402 microtransactions (0.02 USDC on Base).",
       "parameters": {
         "type": "object",
         "properties": {
@@ -15,6 +15,24 @@
           }
         },
         "required": ["url"]
+      }
+    },
+    {
+      "name": "clean_web_search",
+      "description": "Performs deep web research across multiple sources, extracting clean Markdown summaries from top results. Automatically handles HTTP 402 microtransactions (0.05 USDC on Base).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The research search query to look up on the web."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max number of top pages to scrape into summaries (default: 3)."
+          }
+        },
+        "required": ["query"]
       }
     }
   ],

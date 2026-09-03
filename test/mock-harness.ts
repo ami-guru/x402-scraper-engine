@@ -55,8 +55,10 @@ async function runTests() {
     NETWORK: 'base',
     CHAIN_ID: 8453,
     USDC_CONTRACT_ADDRESS: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-    PRICE_USDC: '0.002',
-    PRICE_USDC_UNITS: '2000',
+    PRICE_USDC: '0.02',
+    PRICE_USDC_UNITS: '20000',
+    SEARCH_PRICE_USDC: '0.05',
+    SEARCH_PRICE_UNITS: '50000',
     PAYMENT_WINDOW_SECONDS: 900,
     REPLAY_EXPIRATION_SECONDS: 86400,
     BASE_RPC_URL: 'https://mainnet.base.org',
@@ -156,7 +158,8 @@ async function runTests() {
   const healthRes = await worker.fetch(healthReq, mockEnv, mockCtx);
   assert(healthRes.status === 200, 'GET /health returns HTTP 200 OK');
   const healthJson: any = await healthRes.json();
-  assert(healthJson.payment.priceUsdc === '0.002', 'GET /health returns 0.002 USDC pricing');
+  assert(healthJson.pricing.scrape_usdc === '0.02', 'GET /health returns 0.02 USDC pricing');
+  assert(healthJson.pricing.search_usdc === '0.05', 'GET /health returns 0.05 USDC search pricing');
   assert(healthJson.payment.recipient === mockEnv.TREASURY_WALLET_ADDRESS, 'GET /health returns treasury recipient');
 
   // POST /v1/scrape without receipt -> HTTP 402
@@ -170,8 +173,19 @@ async function runTests() {
   assert(unpaidRes.status === 402, 'POST /v1/scrape without receipt returns HTTP 402 Payment Required');
   assert(unpaidRes.headers.get('X-Payment-Version') === '1', 'Returns X-Payment-Version: 1');
   assert(unpaidRes.headers.get('X-Payment-Network') === 'base', 'Returns X-Payment-Network: base');
-  assert(unpaidRes.headers.get('X-Payment-Amount') === '0.002', 'Returns X-Payment-Amount: 0.002');
+  assert(unpaidRes.headers.get('X-Payment-Amount') === '0.02', 'Returns X-Payment-Amount: 0.02');
   assert(unpaidRes.headers.get('X-Payment-To') === mockEnv.TREASURY_WALLET_ADDRESS, 'Returns X-Payment-To with treasury address');
+
+  // POST /v1/search without receipt -> HTTP 402 ($0.05)
+  const unpaidSearchReq = new Request('http://localhost/v1/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: 'autonomous agents' })
+  });
+
+  const unpaidSearchRes = await worker.fetch(unpaidSearchReq, mockEnv, mockCtx);
+  assert(unpaidSearchRes.status === 402, 'POST /v1/search without receipt returns HTTP 402 Payment Required');
+  assert(unpaidSearchRes.headers.get('X-Payment-Amount') === '0.05', 'Returns X-Payment-Amount: 0.05 for search');
 
   const challengeJson: any = await unpaidRes.json();
   assert(challengeJson.error === 'Payment Required', 'Returns standardized 402 JSON error');

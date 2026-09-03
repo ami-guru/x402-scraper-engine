@@ -5,6 +5,8 @@ export interface Env {
   USDC_CONTRACT_ADDRESS?: string;
   PRICE_USDC?: string;
   PRICE_USDC_UNITS?: string;
+  SEARCH_PRICE_USDC?: string;
+  SEARCH_PRICE_UNITS?: string;
   PAYMENT_WINDOW_SECONDS?: string | number;
   REPLAY_EXPIRATION_SECONDS?: string | number;
   BASE_RPC_URL?: string;
@@ -14,6 +16,11 @@ export interface Env {
 export interface ScrapeRequest {
   url: string;
   format?: 'markdown' | 'text';
+}
+
+export interface SearchRequest {
+  query: string;
+  limit?: number;
 }
 
 export interface ScrapeResponse {

@@ -1,6 +1,6 @@
 name: x402-scraper-engine
-version: 1.0.0
-description: Production HTTP 402 Web3 Microtransaction Scraper & Markdown Converter for AI Agents on Base L2
+version: 1.1.0
+description: Production HTTP 402 Web3 Microtransaction Scraper ($0.02 USDC) & Deep Search Tool ($0.05 USDC) for AI Agents on Base L2
 repository: https://github.com/ami-guru/x402-scraper-engine
 homepage: https://getguruautomations.com
 license: MIT
@@ -17,7 +17,7 @@ startCommand:
       AGENT_PRIVATE_KEY: ""
 tools:
   - name: clean_web_scrape
-    description: Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown for LLM ingestion with autonomous HTTP 402 micro-settlement on Base.
+    description: Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown with autonomous HTTP 402 micro-settlement on Base (0.02 USDC).
     parameters:
       type: object
       properties:
@@ -26,3 +26,16 @@ tools:
           description: The target webpage URL to scrape.
       required:
         - url
+  - name: clean_web_search
+    description: Performs deep web research across multiple sources, extracting clean Markdown summaries from top results with autonomous HTTP 402 micro-settlement on Base (0.05 USDC).
+    parameters:
+      type: object
+      properties:
+        query:
+          type: string
+          description: Search query for deep research.
+        limit:
+          type: number
+          description: Max number of top results to summarize (default 3).
+      required:
+        - query

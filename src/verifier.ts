@@ -35,6 +35,7 @@ function topicToAddress(topic: string): string {
 export async function verifyBasePayment(
   txHash: string,
   env: Env,
+  requiredAmountOverrideUnits?: bigint,
   rpcOverride?: string
 ): Promise<VerificationResult> {
   const cleanTxHash = txHash.trim().toLowerCase();
@@ -45,7 +46,7 @@ export async function verifyBasePayment(
 
   const expectedUsdc = (env.USDC_CONTRACT_ADDRESS || DEFAULT_USDC_BASE).toLowerCase();
   const expectedTreasury = env.TREASURY_WALLET_ADDRESS.toLowerCase();
-  const requiredAmountUnits = env.PRICE_USDC_UNITS ? BigInt(env.PRICE_USDC_UNITS) : DEFAULT_PRICE_UNITS;
+  const requiredAmountUnits = requiredAmountOverrideUnits || (env.PRICE_USDC_UNITS ? BigInt(env.PRICE_USDC_UNITS) : 20000n);
   const maxAgeSeconds = env.PAYMENT_WINDOW_SECONDS ? Number(env.PAYMENT_WINDOW_SECONDS) : DEFAULT_WINDOW_SECONDS;
   const rpcUrl = rpcOverride || env.BASE_RPC_URL || 'https://mainnet.base.org';
 

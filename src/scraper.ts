@@ -3,6 +3,19 @@
  * Designed for token-efficient LLM context ingestion.
  */
 
+export interface SearchResultItem {
+  title: string;
+  url: string;
+  snippet: string;
+  markdownSummary?: string;
+}
+
+export interface SearchAndScrapeResult {
+  query: string;
+  results: SearchResultItem[];
+  tokensEstimated: number;
+}
+
 // SSRF Protection: Block private IP ranges and internal hostnames
 export function validateUrl(inputUrl: string): { valid: boolean; error?: string; url?: URL } {
   try {
@@ -210,4 +223,98 @@ export function decodeHtmlEntities(str: string): string {
 export function estimateTokens(text: string): number {
   if (!text) return 0;
   return Math.ceil(text.length / 3.8);
+}
+
+/**
+ * Searches the web and scrapes top results into clean Markdown summaries
+ */
+export async function searchAndScrapeToMarkdown(
+  query: string,
+  limit: number = 3
+): Promise<SearchAndScrapeResult> {
+  const cleanQuery = query.trim();
+  if (!cleanQuery) {
+    throw new Error('Search query cannot be empty.');
+  }
+
+  const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(cleanQuery)}`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+  let searchHtml = '';
+  try {
+    const searchRes = await fetch(searchUrl, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9'
+      }
+    });
+
+    if (!searchRes.ok) {
+      throw new Error(`Search provider returned HTTP ${searchRes.status}`);
+    }
+    searchHtml = await searchRes.text();
+  } catch (err: any) {
+    throw new Error(`Search query execution failed: ${err.message}`);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  // Parse DuckDuckGo HTML results
+  const results: SearchResultItem[] = [];
+  const resultRegex = /<a\b[^>]*class=["'][^"']*result__snippet[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  const titleRegex = /<a\b[^>]*class=["'][^"']*result__url[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+
+  // Extract result blocks
+  const resultBlocks = searchHtml.split(/<div\b[^>]*class=["'][^"']*result\b[^"']*["']/i).slice(1);
+
+  for (const block of resultBlocks) {
+    if (results.length >= limit) break;
+
+    const titleMatch = block.match(/<a\b[^>]*class=["'][^"']*result__a[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i);
+    const snippetMatch = block.match(/<a\b[^>]*class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/a>/i);
+
+    if (titleMatch) {
+      let rawHref = titleMatch[1];
+      // DuckDuckGo redirects through /l/?uddg=...
+      const uddgMatch = rawHref.match(/uddg=([^&]+)/);
+      if (uddgMatch) {
+        rawHref = decodeURIComponent(uddgMatch[1]);
+      }
+
+      const check = validateUrl(rawHref);
+      if (check.valid && check.url) {
+        const itemTitle = decodeHtmlEntities(titleMatch[2].replace(/<[^>]+>/g, '').trim());
+        const itemSnippet = snippetMatch ? decodeHtmlEntities(snippetMatch[1].replace(/<[^>]+>/g, '').trim()) : '';
+
+        results.push({
+          title: itemTitle || check.url.hostname,
+          url: rawHref,
+          snippet: itemSnippet
+        });
+      }
+    }
+  }
+
+  // Fetch top results and scrape light markdown
+  await Promise.all(
+    results.map(async (item) => {
+      try {
+        const scraped = await scrapeToMarkdown(item.url);
+        // Truncate individual scrape to first 1200 chars for token efficiency
+        item.markdownSummary = scraped.markdown.slice(0, 1200) + (scraped.markdown.length > 1200 ? '\n\n*(Truncated for summary)*' : '');
+      } catch (e) {
+        item.markdownSummary = item.snippet;
+      }
+    })
+  );
+
+  const fullText = JSON.stringify(results);
+  return {
+    query: cleanQuery,
+    results,
+    tokensEstimated: estimateTokens(fullText)
+  };
 }

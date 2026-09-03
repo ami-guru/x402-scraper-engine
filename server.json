@@ -1,9 +1,9 @@
 {
   "$schema": "https://modelcontextprotocol.io/schema/server.json",
   "name": "x402-scraper-engine",
-  "title": "x402 Web3 Microtransaction Scraper",
-  "description": "Production HTTP 402 Web3 Microtransaction Scraper & Markdown Converter for AI Agents on Base L2 (0.002 USDC per scrape).",
-  "version": "1.0.0",
+  "title": "x402 Web3 Microtransaction Scraper & Deep Search",
+  "description": "Production HTTP 402 Web3 Microtransaction Scraper ($0.02 USDC) & Deep Search ($0.05 USDC) for AI Agents on Base L2.",
+  "version": "1.1.0",
   "author": {
     "name": "ASOT Marketing and Investment",
     "url": "https://getguruautomations.com"
@@ -16,6 +16,8 @@
   "keywords": [
     "mcp",
     "web-scraping",
+    "deep-research",
+    "web-search",
     "http402",
     "base",
     "usdc",
@@ -26,7 +28,7 @@
   "tools": [
     {
       "name": "clean_web_scrape",
-      "description": "Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown for LLM ingestion. Automatically handles HTTP 402 microtransactions (0.002 USDC on Base) if required.",
+      "description": "Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown for LLM ingestion. Automatically handles HTTP 402 microtransactions (0.02 USDC on Base).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -36,6 +38,24 @@
           }
         },
         "required": ["url"]
+      }
+    },
+    {
+      "name": "clean_web_search",
+      "description": "Performs deep web research across multiple sources, extracting clean Markdown summaries from top results. Automatically handles HTTP 402 microtransactions (0.05 USDC on Base).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query for deep research."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max number of top results to scrape (default: 3)."
+          }
+        },
+        "required": ["query"]
       }
     }
   ]

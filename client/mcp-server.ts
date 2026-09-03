@@ -61,7 +61,7 @@ class X402ScraperMcpServer {
         {
           name: 'clean_web_scrape',
           description:
-            'Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown for LLM ingestion. Automatically handles HTTP 402 microtransactions (0.002 USDC on Base) if required.',
+            'Scrapes any public webpage and returns clean, sanitized, token-efficient Markdown for LLM ingestion. Automatically handles HTTP 402 microtransactions (0.02 USDC on Base) if required.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -72,42 +72,62 @@ class X402ScraperMcpServer {
             },
             required: ['url']
           }
+        },
+        {
+          name: 'clean_web_search',
+          description:
+            'Performs deep web research across multiple sources, extracting clean Markdown summaries from top results. Automatically handles HTTP 402 microtransactions (0.05 USDC on Base).',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                description: 'The research search query to look up on the web.'
+              },
+              limit: {
+                type: 'number',
+                description: 'Max number of top pages to scrape into summaries (default: 3).'
+              }
+            },
+            required: ['query']
+          }
         }
       ]
     }));
 
     // Call Tool
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      if (request.params.name !== 'clean_web_scrape') {
-        throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
+      const toolName = request.params.name;
+
+      if (toolName === 'clean_web_scrape') {
+        const args = request.params.arguments as { url?: string };
+        if (!args || !args.url) {
+          throw new McpError(ErrorCode.InvalidParams, 'Missing "url" parameter.');
+        }
+
+        try {
+          const result = await this.executeScrapeWithAutoPayment(args.url);
+          return { content: [{ type: 'text', text: result }] };
+        } catch (error: any) {
+          return { isError: true, content: [{ type: 'text', text: `Scrape Error: ${error.message}` }] };
+        }
       }
 
-      const args = request.params.arguments as { url?: string };
-      if (!args || !args.url) {
-        throw new McpError(ErrorCode.InvalidParams, 'Missing "url" parameter.');
+      if (toolName === 'clean_web_search') {
+        const args = request.params.arguments as { query?: string; limit?: number };
+        if (!args || !args.query) {
+          throw new McpError(ErrorCode.InvalidParams, 'Missing "query" parameter.');
+        }
+
+        try {
+          const result = await this.executeSearchWithAutoPayment(args.query, args.limit || 3);
+          return { content: [{ type: 'text', text: result }] };
+        } catch (error: any) {
+          return { isError: true, content: [{ type: 'text', text: `Search Error: ${error.message}` }] };
+        }
       }
 
-      try {
-        const result = await this.executeScrapeWithAutoPayment(args.url);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: result
-            }
-          ]
-        };
-      } catch (error: any) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: 'text',
-              text: `Scrape Error: ${error.message}`
-            }
-          ]
-        };
-      }
+      throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${toolName}`);
     });
   }
 
@@ -194,6 +214,78 @@ class X402ScraperMcpServer {
   }
 
   /**
+   * Performs web search and deep scrape, auto-settling 0.05 USDC on Base if 402 is returned
+   */
+  private async executeSearchWithAutoPayment(query: string, limit: number): Promise<string> {
+    const searchEndpoint = `${WORKER_URL.replace(/\/$/, '')}/v1/search`;
+
+    // 1. Initial Attempt
+    let initialRes = await fetch(searchEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, limit })
+    });
+
+    if (initialRes.status === 200) {
+      const data: any = await initialRes.json();
+      return formatSearchResultsOutput(data);
+    }
+
+    if (initialRes.status === 402) {
+      const paymentData: any = await initialRes.json().catch(() => ({}));
+      const recipient =
+        initialRes.headers.get('X-Payment-To') ||
+        paymentData.payment?.recipient ||
+        process.env.TREASURY_WALLET_ADDRESS;
+      const amount = initialRes.headers.get('X-Payment-Amount') || paymentData.payment?.amount || '0.05';
+      const tokenAddress: Address =
+        (initialRes.headers.get('X-Payment-Asset-Address') as Address) ||
+        (paymentData.payment?.contractAddress as Address) ||
+        DEFAULT_USDC_BASE;
+
+      if (!recipient || recipient === '0x0000000000000000000000000000000000000000') {
+        throw new Error('HTTP 402 received, but treasury address is not configured on worker.');
+      }
+
+      if (!AGENT_PRIVATE_KEY || AGENT_PRIVATE_KEY.startsWith('0x000000000000')) {
+        throw new Error(
+          `HTTP 402 Payment Required: Deep search charges ${amount} USDC on Base.\n` +
+          `Recipient: ${recipient}\n` +
+          `Please configure a funded AGENT_PRIVATE_KEY in .env to proceed.`
+        );
+      }
+
+      // Execute 0.05 USDC payment on Base
+      const txHash = await this.sendUsdcPayment(recipient as Address, amount, tokenAddress);
+
+      // Resubmit request with payment receipt
+      const paidRes = await fetch(searchEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Payment-Receipt': txHash
+        },
+        body: JSON.stringify({ query, limit })
+      });
+
+      if (!paidRes.ok) {
+        const errorBody: any = await paidRes.json().catch(() => ({}));
+        throw new Error(
+          `Payment submitted (${txHash}), but worker returned HTTP ${paidRes.status}: ${
+            errorBody.details || errorBody.message || errorBody.error || paidRes.statusText
+          }`
+        );
+      }
+
+      const finalData: any = await paidRes.json();
+      return formatSearchResultsOutput(finalData);
+    }
+
+    const errText = await initialRes.text();
+    throw new Error(`Search returned HTTP ${initialRes.status}: ${errText}`);
+  }
+
+  /**
    * Signs and broadcasts USDC transfer on Base
    */
   private async sendUsdcPayment(
@@ -251,6 +343,31 @@ function formatMarkdownOutput(data: any): string {
   header += `\n---\n\n`;
 
   return `${header}${data.markdown}`;
+}
+
+function formatSearchResultsOutput(data: any): string {
+  let header = `# Deep Research: ${data.query}\n\n`;
+  header += `> **Results Count:** ${data.results?.length || 0}\n`;
+  header += `> **Estimated Tokens:** ${data.tokens_estimated || 'N/A'}\n`;
+  if (data.payment?.tx_hash) {
+    header += `> **Settlement Proof (Base L2):** [${data.payment.tx_hash}](https://basescan.org/tx/${data.payment.tx_hash}) (${data.payment.amount} ${data.payment.asset})\n`;
+  }
+  header += `\n---\n\n`;
+
+  let body = '';
+  for (const item of data.results || []) {
+    body += `### [${item.title}](${item.url})\n`;
+    body += `> **URL:** ${item.url}\n\n`;
+    if (item.snippet) {
+      body += `**Snippet:** ${item.snippet}\n\n`;
+    }
+    if (item.markdownSummary) {
+      body += `**Extracted Summary:**\n\n${item.markdownSummary}\n\n`;
+    }
+    body += `---\n\n`;
+  }
+
+  return `${header}${body}`;
 }
 
 const server = new X402ScraperMcpServer();
