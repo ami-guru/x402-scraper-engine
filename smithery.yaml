@@ -1,6 +1,6 @@
 name: x402-scraper-engine
-version: 1.1.0
-description: Production HTTP 402 Web3 Microtransaction Scraper ($0.02 USDC) & Deep Search Tool ($0.05 USDC) for AI Agents on Base L2
+version: 1.2.0
+description: Production HTTP 402 Web3 Microtransaction Scraper ($0.02), Deep Search ($0.05), and Twitter/X Intelligence Tool ($0.05) for AI Agents on Base L2
 repository: https://github.com/ami-guru/x402-scraper-engine
 homepage: https://getguruautomations.com
 license: MIT
@@ -39,3 +39,26 @@ tools:
           description: Max number of top results to summarize (default 3).
       required:
         - query
+  - name: twitter_search
+    description: Searches public tweets, cashtags ($BTC, $BASE), and sentiment across Twitter/X without the $100/mo API fee with autonomous HTTP 402 settlement on Base (0.05 USDC).
+    parameters:
+      type: object
+      properties:
+        query:
+          type: string
+          description: Twitter search query or cashtag.
+        limit:
+          type: number
+          description: Max number of tweets (default 5).
+      required:
+        - query
+  - name: twitter_profile_lookup
+    description: Extracts public Twitter/X profile bio and recent tweets without the $100/mo API fee with autonomous HTTP 402 settlement on Base (0.03 USDC).
+    parameters:
+      type: object
+      properties:
+        username:
+          type: string
+          description: The Twitter handle/username.
+      required:
+        - username

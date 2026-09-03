@@ -20,16 +20,23 @@ async function checkPublicAvailability() {
     }
   }
 
-  // Also test a POST 402 challenge anonymously without auth
+  // Also test POST 402 challenges anonymously without auth
   try {
     const postRes = await fetch('https://x402-scraper-engine.gejoe-tt.workers.dev/v1/scrape', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: 'https://example.com' })
     });
-    console.log(`\n[HTTP ${postRes.status}] POST /v1/scrape (Anonymous 402 Challenge) -> ${postRes.status === 402 ? 'PUBLICLY WORKING 402 PROTOCOL ✅' : 'FAILED ❌'}`);
+    console.log(`\n[HTTP ${postRes.status}] POST /v1/scrape (Scrape 402 Challenge: ${postRes.headers.get('x-payment-amount')} USDC) -> ${postRes.status === 402 && postRes.headers.get('x-payment-amount') === '0.02' ? 'VERIFIED $0.02 CHALLENGE ✅' : 'FAILED ❌'}`);
+
+    const searchRes = await fetch('https://x402-scraper-engine.gejoe-tt.workers.dev/v1/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: 'autonomous agents' })
+    });
+    console.log(`[HTTP ${searchRes.status}] POST /v1/search (Search 402 Challenge: ${searchRes.headers.get('x-payment-amount')} USDC) -> ${searchRes.status === 402 && searchRes.headers.get('x-payment-amount') === '0.05' ? 'VERIFIED $0.05 CHALLENGE ✅' : 'FAILED ❌'}`);
   } catch (e: any) {
-    console.log(`\n[ERROR] POST /v1/scrape -> ${e.message} ❌`);
+    console.log(`\n[ERROR] POST 402 Challenges -> ${e.message} ❌`);
   }
 
   console.log('\n----------------------------------------------\n');

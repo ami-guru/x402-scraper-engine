@@ -187,6 +187,28 @@ async function runTests() {
   assert(unpaidSearchRes.status === 402, 'POST /v1/search without receipt returns HTTP 402 Payment Required');
   assert(unpaidSearchRes.headers.get('X-Payment-Amount') === '0.05', 'Returns X-Payment-Amount: 0.05 for search');
 
+  // POST /v1/twitter/search without receipt -> HTTP 402 ($0.05)
+  const unpaidTwitterReq = new Request('http://localhost/v1/twitter/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: '$BASE agents' })
+  });
+
+  const unpaidTwitterRes = await worker.fetch(unpaidTwitterReq, mockEnv, mockCtx);
+  assert(unpaidTwitterRes.status === 402, 'POST /v1/twitter/search without receipt returns HTTP 402 Payment Required');
+  assert(unpaidTwitterRes.headers.get('X-Payment-Amount') === '0.05', 'Returns X-Payment-Amount: 0.05 for twitter search');
+
+  // POST /v1/twitter/profile without receipt -> HTTP 402 ($0.03)
+  const unpaidProfileReq = new Request('http://localhost/v1/twitter/profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'jessepollak' })
+  });
+
+  const unpaidProfileRes = await worker.fetch(unpaidProfileReq, mockEnv, mockCtx);
+  assert(unpaidProfileRes.status === 402, 'POST /v1/twitter/profile without receipt returns HTTP 402 Payment Required');
+  assert(unpaidProfileRes.headers.get('X-Payment-Amount') === '0.03', 'Returns X-Payment-Amount: 0.03 for twitter profile');
+
   const challengeJson: any = await unpaidRes.json();
   assert(challengeJson.error === 'Payment Required', 'Returns standardized 402 JSON error');
   assert(challengeJson.payment.chainId === 8453, 'Returns Base Chain ID 8453');

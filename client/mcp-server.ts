@@ -91,6 +91,40 @@ class X402ScraperMcpServer {
             },
             required: ['query']
           }
+        },
+        {
+          name: 'twitter_search',
+          description:
+            'Searches public tweets, cashtags ($BTC, $BASE), and sentiment across Twitter/X without the $100/mo API fee. Automatically handles HTTP 402 microtransactions (0.05 USDC on Base).',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                description: 'Twitter search query, cashtag, or topic (e.g. "$BASE autonomous agents").'
+              },
+              limit: {
+                type: 'number',
+                description: 'Max number of tweets to extract (default: 5).'
+              }
+            },
+            required: ['query']
+          }
+        },
+        {
+          name: 'twitter_profile_lookup',
+          description:
+            'Extracts public Twitter/X profile bio and recent tweets for any username without the $100/mo API fee. Automatically handles HTTP 402 microtransactions (0.03 USDC on Base).',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              username: {
+                type: 'string',
+                description: 'The Twitter handle/username to look up (e.g. "jessepollak").'
+              }
+            },
+            required: ['username']
+          }
         }
       ]
     }));
@@ -124,6 +158,34 @@ class X402ScraperMcpServer {
           return { content: [{ type: 'text', text: result }] };
         } catch (error: any) {
           return { isError: true, content: [{ type: 'text', text: `Search Error: ${error.message}` }] };
+        }
+      }
+
+      if (toolName === 'twitter_search') {
+        const args = request.params.arguments as { query?: string; limit?: number };
+        if (!args || !args.query) {
+          throw new McpError(ErrorCode.InvalidParams, 'Missing "query" parameter.');
+        }
+
+        try {
+          const result = await this.executeTwitterSearchWithAutoPayment(args.query, args.limit || 5);
+          return { content: [{ type: 'text', text: result }] };
+        } catch (error: any) {
+          return { isError: true, content: [{ type: 'text', text: `Twitter Search Error: ${error.message}` }] };
+        }
+      }
+
+      if (toolName === 'twitter_profile_lookup') {
+        const args = request.params.arguments as { username?: string };
+        if (!args || !args.username) {
+          throw new McpError(ErrorCode.InvalidParams, 'Missing "username" parameter.');
+        }
+
+        try {
+          const result = await this.executeTwitterProfileWithAutoPayment(args.username);
+          return { content: [{ type: 'text', text: result }] };
+        } catch (error: any) {
+          return { isError: true, content: [{ type: 'text', text: `Twitter Profile Error: ${error.message}` }] };
         }
       }
 
@@ -283,6 +345,144 @@ class X402ScraperMcpServer {
 
     const errText = await initialRes.text();
     throw new Error(`Search returned HTTP ${initialRes.status}: ${errText}`);
+  }
+
+  /**
+   * Performs Twitter search and deep extraction, auto-settling 0.05 USDC on Base if 402 is returned
+   */
+  private async executeTwitterSearchWithAutoPayment(query: string, limit: number): Promise<string> {
+    const endpoint = `${WORKER_URL.replace(/\/$/, '')}/v1/twitter/search`;
+
+    let initialRes = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, limit })
+    });
+
+    if (initialRes.status === 200) {
+      const data: any = await initialRes.json();
+      return data.markdown || JSON.stringify(data, null, 2);
+    }
+
+    if (initialRes.status === 402) {
+      const paymentData: any = await initialRes.json().catch(() => ({}));
+      const recipient =
+        initialRes.headers.get('X-Payment-To') ||
+        paymentData.payment?.recipient ||
+        process.env.TREASURY_WALLET_ADDRESS;
+      const amount = initialRes.headers.get('X-Payment-Amount') || paymentData.payment?.amount || '0.05';
+      const tokenAddress: Address =
+        (initialRes.headers.get('X-Payment-Asset-Address') as Address) ||
+        (paymentData.payment?.contractAddress as Address) ||
+        DEFAULT_USDC_BASE;
+
+      if (!recipient || recipient === '0x0000000000000000000000000000000000000000') {
+        throw new Error('HTTP 402 received, but treasury address is not configured on worker.');
+      }
+
+      if (!AGENT_PRIVATE_KEY || AGENT_PRIVATE_KEY.startsWith('0x000000000000')) {
+        throw new Error(
+          `HTTP 402 Payment Required: Twitter search charges ${amount} USDC on Base.\n` +
+          `Recipient: ${recipient}\n` +
+          `Please configure a funded AGENT_PRIVATE_KEY in .env to proceed.`
+        );
+      }
+
+      const txHash = await this.sendUsdcPayment(recipient as Address, amount, tokenAddress);
+
+      const paidRes = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Payment-Receipt': txHash
+        },
+        body: JSON.stringify({ query, limit })
+      });
+
+      if (!paidRes.ok) {
+        const errorBody: any = await paidRes.json().catch(() => ({}));
+        throw new Error(
+          `Payment submitted (${txHash}), but worker returned HTTP ${paidRes.status}: ${
+            errorBody.details || errorBody.message || errorBody.error || paidRes.statusText
+          }`
+        );
+      }
+
+      const finalData: any = await paidRes.json();
+      return finalData.markdown || JSON.stringify(finalData, null, 2);
+    }
+
+    const errText = await initialRes.text();
+    throw new Error(`Twitter search returned HTTP ${initialRes.status}: ${errText}`);
+  }
+
+  /**
+   * Performs Twitter profile lookup, auto-settling 0.03 USDC on Base if 402 is returned
+   */
+  private async executeTwitterProfileWithAutoPayment(username: string): Promise<string> {
+    const endpoint = `${WORKER_URL.replace(/\/$/, '')}/v1/twitter/profile`;
+
+    let initialRes = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username })
+    });
+
+    if (initialRes.status === 200) {
+      const data: any = await initialRes.json();
+      return data.markdown || JSON.stringify(data, null, 2);
+    }
+
+    if (initialRes.status === 402) {
+      const paymentData: any = await initialRes.json().catch(() => ({}));
+      const recipient =
+        initialRes.headers.get('X-Payment-To') ||
+        paymentData.payment?.recipient ||
+        process.env.TREASURY_WALLET_ADDRESS;
+      const amount = initialRes.headers.get('X-Payment-Amount') || paymentData.payment?.amount || '0.03';
+      const tokenAddress: Address =
+        (initialRes.headers.get('X-Payment-Asset-Address') as Address) ||
+        (paymentData.payment?.contractAddress as Address) ||
+        DEFAULT_USDC_BASE;
+
+      if (!recipient || recipient === '0x0000000000000000000000000000000000000000') {
+        throw new Error('HTTP 402 received, but treasury address is not configured on worker.');
+      }
+
+      if (!AGENT_PRIVATE_KEY || AGENT_PRIVATE_KEY.startsWith('0x000000000000')) {
+        throw new Error(
+          `HTTP 402 Payment Required: Twitter profile lookup charges ${amount} USDC on Base.\n` +
+          `Recipient: ${recipient}\n` +
+          `Please configure a funded AGENT_PRIVATE_KEY in .env to proceed.`
+        );
+      }
+
+      const txHash = await this.sendUsdcPayment(recipient as Address, amount, tokenAddress);
+
+      const paidRes = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Payment-Receipt': txHash
+        },
+        body: JSON.stringify({ username })
+      });
+
+      if (!paidRes.ok) {
+        const errorBody: any = await paidRes.json().catch(() => ({}));
+        throw new Error(
+          `Payment submitted (${txHash}), but worker returned HTTP ${paidRes.status}: ${
+            errorBody.details || errorBody.message || errorBody.error || paidRes.statusText
+          }`
+        );
+      }
+
+      const finalData: any = await paidRes.json();
+      return finalData.markdown || JSON.stringify(finalData, null, 2);
+    }
+
+    const errText = await initialRes.text();
+    throw new Error(`Twitter profile lookup returned HTTP ${initialRes.status}: ${errText}`);
   }
 
   /**

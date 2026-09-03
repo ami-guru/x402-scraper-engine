@@ -1,7 +1,7 @@
 {
   "name": "x402-scraper-engine",
-  "version": "1.1.0",
-  "description": "HTTP 402 Micropayment Web Scraper ($0.02 USDC) & Deep Search Tool ($0.05 USDC) for AI Agents on Base L2",
+  "version": "1.2.0",
+  "description": "HTTP 402 Micropayment Web Scraper ($0.02), Deep Search ($0.05), and Twitter/X Intelligence Tool ($0.05) for AI Agents on Base L2",
   "tools": [
     {
       "name": "clean_web_scrape",
@@ -33,6 +33,38 @@
           }
         },
         "required": ["query"]
+      }
+    },
+    {
+      "name": "twitter_search",
+      "description": "Searches public tweets, cashtags ($BTC, $BASE), and sentiment across Twitter/X without the $100/mo API fee. Automatically handles HTTP 402 microtransactions (0.05 USDC on Base).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Twitter search query, cashtag, or topic (e.g. '$BASE autonomous agents')."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max number of tweets to extract (default: 5)."
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "twitter_profile_lookup",
+      "description": "Extracts public Twitter/X profile bio and recent tweets for any username without the $100/mo API fee. Automatically handles HTTP 402 microtransactions (0.03 USDC on Base).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "description": "The Twitter handle/username to look up (e.g. 'jessepollak')."
+          }
+        },
+        "required": ["username"]
       }
     }
   ],

@@ -1,5 +1,6 @@
-import { Env, ScrapeRequest, SearchRequest, ScrapeResponse } from './types';
+import { Env, ScrapeRequest, SearchRequest, TwitterSearchRequest, TwitterProfileRequest, ScrapeResponse, TwitterSearchResponse, TwitterProfileResponse } from './types';
 import { validateUrl, scrapeToMarkdown, searchAndScrapeToMarkdown } from './scraper';
+import { searchTwitter, getTwitterProfile } from './twitter';
 import { verifyBasePayment, checkAndRecordReplay } from './verifier';
 
 const CORS_HEADERS = {
@@ -238,11 +239,13 @@ export default {
         return jsonResponse({
           service: 'x402-scraper-engine',
           status: 'operational',
-          version: '1.1.0',
-          description: 'HTTP 402 Web3 Microtransaction Scraper & Deep Research Search Engine for AI Agents on Base L2',
+          version: '1.2.0',
+          description: 'HTTP 402 Web3 Microtransaction Scraper, Deep Search & Twitter/X Intelligence Engine for AI Agents on Base L2',
           pricing: {
             scrape_usdc: env.PRICE_USDC || '0.02',
-            search_usdc: env.SEARCH_PRICE_USDC || '0.05'
+            search_usdc: env.SEARCH_PRICE_USDC || '0.05',
+            twitter_search_usdc: env.TWITTER_SEARCH_PRICE_USDC || '0.05',
+            twitter_profile_usdc: env.TWITTER_PROFILE_PRICE_USDC || '0.03'
           },
           payment: {
             protocol: 'x402',
@@ -266,10 +269,10 @@ export default {
       if (url.pathname === '/.well-known/ai-plugin.json') {
         return jsonResponse({
           schema_version: 'v1',
-          name_for_human: 'x402 Web Scraper & Deep Search',
-          name_for_model: 'clean_web_scrape_and_search',
-          description_for_human: 'Pay-per-call web scraper ($0.02 USDC) and multi-source web search ($0.05 USDC) converting pages to token-efficient markdown on Base.',
-          description_for_model: 'Scrapes web pages ($0.02 USDC) and searches the web ($0.05 USDC), returning token-efficient markdown. Automatically settles via HTTP 402 on Base.',
+          name_for_human: 'x402 Scraper & Twitter Intelligence',
+          name_for_model: 'clean_web_scrape_search_and_twitter',
+          description_for_human: 'Pay-per-call web scraper ($0.02), deep web search ($0.05), and Twitter/X sentiment intelligence ($0.05) converting feeds to token-efficient markdown on Base.',
+          description_for_model: 'Scrapes web pages ($0.02), searches the web ($0.05), and queries Twitter cashtags/profiles ($0.05). Automatically settles via HTTP 402 on Base.',
           auth: { type: 'none' },
           api: { type: 'openapi', url: `${url.origin}/openapi.json` },
           logo_url: 'https://getguruautomations.com/favicon.ico',
@@ -299,6 +302,18 @@ export default {
               method: 'POST',
               pricing: '0.05 USDC',
               amount_units: '50000'
+            },
+            {
+              path: '/v1/twitter/search',
+              method: 'POST',
+              pricing: '0.05 USDC',
+              amount_units: '50000'
+            },
+            {
+              path: '/v1/twitter/profile',
+              method: 'POST',
+              pricing: '0.03 USDC',
+              amount_units: '30000'
             }
           ]
         });
@@ -572,6 +587,245 @@ export default {
           },
           502
         );
+      }
+    }
+
+    // 5. POST /v1/twitter/search Route ($0.05 USDC)
+    if (request.method === 'POST' && url.pathname === '/v1/twitter/search') {
+      let body: TwitterSearchRequest;
+      try {
+        body = await request.json();
+      } catch (e) {
+        return jsonResponse({ error: 'Invalid JSON body. Expected { "query": "..." }' }, 400);
+      }
+
+      if (!body || !body.query || !body.query.trim()) {
+        return jsonResponse({ error: 'Missing required field: "query"' }, 400);
+      }
+
+      // Check for payment receipt
+      const receiptHeader = request.headers.get('X-Payment-Receipt');
+      const authHeader = request.headers.get('Authorization');
+      let txHash = receiptHeader?.trim();
+
+      if (!txHash && authHeader && authHeader.startsWith('Bearer ')) {
+        txHash = authHeader.substring(7).trim();
+      }
+
+      const twitterPaymentConfig = {
+        version: '1',
+        network: env.NETWORK || 'base',
+        chainId: String(env.CHAIN_ID || 8453),
+        asset: 'USDC',
+        contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+        amount: env.TWITTER_SEARCH_PRICE_USDC || '0.05',
+        recipient: env.TREASURY_WALLET_ADDRESS,
+        windowSeconds: String(env.PAYMENT_WINDOW_SECONDS || 900)
+      };
+
+      const twitterHeaders = {
+        'X-Payment-Version': twitterPaymentConfig.version,
+        'X-Payment-Network': twitterPaymentConfig.network,
+        'X-Payment-Chain-Id': twitterPaymentConfig.chainId,
+        'X-Payment-Asset': twitterPaymentConfig.asset,
+        'X-Payment-Asset-Address': twitterPaymentConfig.contractAddress,
+        'X-Payment-Amount': twitterPaymentConfig.amount,
+        'X-Payment-To': twitterPaymentConfig.recipient,
+        'X-Payment-Window': twitterPaymentConfig.windowSeconds
+      };
+
+      // 402 Challenge if no receipt
+      if (!txHash) {
+        return jsonResponse(
+          {
+            error: 'Payment Required',
+            message: `This Twitter search endpoint requires an on-chain microtransaction of ${twitterPaymentConfig.amount} USDC on Base.`,
+            payment: {
+              version: Number(twitterPaymentConfig.version),
+              network: twitterPaymentConfig.network,
+              chainId: Number(twitterPaymentConfig.chainId),
+              asset: twitterPaymentConfig.asset,
+              contractAddress: twitterPaymentConfig.contractAddress,
+              amount: twitterPaymentConfig.amount,
+              recipient: twitterPaymentConfig.recipient,
+              windowSeconds: Number(twitterPaymentConfig.windowSeconds),
+              instruction: `Transfer ${twitterPaymentConfig.amount} USDC to ${twitterPaymentConfig.recipient} on Base (Chain ID ${twitterPaymentConfig.chainId}), then resubmit with header 'X-Payment-Receipt: <tx_hash>'`
+            }
+          },
+          402,
+          twitterHeaders
+        );
+      }
+
+      // Verify on-chain payment (50,000 units = $0.05 USDC)
+      const requiredUnits = env.TWITTER_SEARCH_PRICE_UNITS ? BigInt(env.TWITTER_SEARCH_PRICE_UNITS) : 50000n;
+      const verification = await verifyBasePayment(txHash, env, requiredUnits);
+      if (!verification.valid) {
+        return jsonResponse(
+          {
+            error: 'Payment Verification Failed',
+            details: verification.error,
+            paymentRequirement: twitterPaymentConfig
+          },
+          402,
+          twitterHeaders
+        );
+      }
+
+      // Check Replay Protection in Cloudflare KV
+      const replayCheck = await checkAndRecordReplay(txHash, env, {
+        query: body.query,
+        action: 'twitter_search',
+        sender: verification.sender,
+        amountUnits: verification.amountUnits?.toString(),
+        timestamp: verification.timestamp
+      });
+
+      if (replayCheck.replayed) {
+        return jsonResponse({ error: 'Replay Detected', message: replayCheck.error || 'Transaction already redeemed.' }, 400);
+      }
+
+      // Execute Twitter Search
+      try {
+        const twitterResult = await searchTwitter(body.query, body.limit || 5);
+        const responsePayload: TwitterSearchResponse = {
+          success: true,
+          query: twitterResult.query,
+          tweets: twitterResult.tweets,
+          markdown: twitterResult.markdown,
+          tokens_estimated: twitterResult.tokensEstimated,
+          payment: {
+            tx_hash: txHash,
+            network: twitterPaymentConfig.network,
+            amount: twitterPaymentConfig.amount,
+            asset: twitterPaymentConfig.asset,
+            settled_at: new Date(verification.timestamp! * 1000).toISOString()
+          }
+        };
+
+        return jsonResponse(responsePayload, 200);
+      } catch (twitterErr: any) {
+        return jsonResponse({ error: 'Twitter Search Failed', message: twitterErr.message }, 502);
+      }
+    }
+
+    // 6. POST /v1/twitter/profile Route ($0.03 USDC)
+    if (request.method === 'POST' && url.pathname === '/v1/twitter/profile') {
+      let body: TwitterProfileRequest;
+      try {
+        body = await request.json();
+      } catch (e) {
+        return jsonResponse({ error: 'Invalid JSON body. Expected { "username": "..." }' }, 400);
+      }
+
+      if (!body || !body.username || !body.username.trim()) {
+        return jsonResponse({ error: 'Missing required field: "username"' }, 400);
+      }
+
+      // Check for payment receipt
+      const receiptHeader = request.headers.get('X-Payment-Receipt');
+      const authHeader = request.headers.get('Authorization');
+      let txHash = receiptHeader?.trim();
+
+      if (!txHash && authHeader && authHeader.startsWith('Bearer ')) {
+        txHash = authHeader.substring(7).trim();
+      }
+
+      const profilePaymentConfig = {
+        version: '1',
+        network: env.NETWORK || 'base',
+        chainId: String(env.CHAIN_ID || 8453),
+        asset: 'USDC',
+        contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+        amount: env.TWITTER_PROFILE_PRICE_USDC || '0.03',
+        recipient: env.TREASURY_WALLET_ADDRESS,
+        windowSeconds: String(env.PAYMENT_WINDOW_SECONDS || 900)
+      };
+
+      const profileHeaders = {
+        'X-Payment-Version': profilePaymentConfig.version,
+        'X-Payment-Network': profilePaymentConfig.network,
+        'X-Payment-Chain-Id': profilePaymentConfig.chainId,
+        'X-Payment-Asset': profilePaymentConfig.asset,
+        'X-Payment-Asset-Address': profilePaymentConfig.contractAddress,
+        'X-Payment-Amount': profilePaymentConfig.amount,
+        'X-Payment-To': profilePaymentConfig.recipient,
+        'X-Payment-Window': profilePaymentConfig.windowSeconds
+      };
+
+      // 402 Challenge if no receipt
+      if (!txHash) {
+        return jsonResponse(
+          {
+            error: 'Payment Required',
+            message: `This Twitter profile endpoint requires an on-chain microtransaction of ${profilePaymentConfig.amount} USDC on Base.`,
+            payment: {
+              version: Number(profilePaymentConfig.version),
+              network: profilePaymentConfig.network,
+              chainId: Number(profilePaymentConfig.chainId),
+              asset: profilePaymentConfig.asset,
+              contractAddress: profilePaymentConfig.contractAddress,
+              amount: profilePaymentConfig.amount,
+              recipient: profilePaymentConfig.recipient,
+              windowSeconds: Number(profilePaymentConfig.windowSeconds),
+              instruction: `Transfer ${profilePaymentConfig.amount} USDC to ${profilePaymentConfig.recipient} on Base (Chain ID ${profilePaymentConfig.chainId}), then resubmit with header 'X-Payment-Receipt: <tx_hash>'`
+            }
+          },
+          402,
+          profileHeaders
+        );
+      }
+
+      // Verify on-chain payment (30,000 units = $0.03 USDC)
+      const requiredUnits = env.TWITTER_PROFILE_PRICE_UNITS ? BigInt(env.TWITTER_PROFILE_PRICE_UNITS) : 30000n;
+      const verification = await verifyBasePayment(txHash, env, requiredUnits);
+      if (!verification.valid) {
+        return jsonResponse(
+          {
+            error: 'Payment Verification Failed',
+            details: verification.error,
+            paymentRequirement: profilePaymentConfig
+          },
+          402,
+          profileHeaders
+        );
+      }
+
+      // Check Replay Protection in Cloudflare KV
+      const replayCheck = await checkAndRecordReplay(txHash, env, {
+        username: body.username,
+        action: 'twitter_profile',
+        sender: verification.sender,
+        amountUnits: verification.amountUnits?.toString(),
+        timestamp: verification.timestamp
+      });
+
+      if (replayCheck.replayed) {
+        return jsonResponse({ error: 'Replay Detected', message: replayCheck.error || 'Transaction already redeemed.' }, 400);
+      }
+
+      // Execute Twitter Profile Scrape
+      try {
+        const profileResult = await getTwitterProfile(body.username);
+        const responsePayload: TwitterProfileResponse = {
+          success: true,
+          username: profileResult.username,
+          bio: profileResult.bio,
+          tweets: profileResult.tweets,
+          markdown: profileResult.markdown,
+          tokens_estimated: profileResult.tokensEstimated,
+          payment: {
+            tx_hash: txHash,
+            network: profilePaymentConfig.network,
+            amount: profilePaymentConfig.amount,
+            asset: profilePaymentConfig.asset,
+            settled_at: new Date(verification.timestamp! * 1000).toISOString()
+          }
+        };
+
+        return jsonResponse(responsePayload, 200);
+      } catch (profileErr: any) {
+        return jsonResponse({ error: 'Twitter Profile Lookup Failed', message: profileErr.message }, 502);
       }
     }
 

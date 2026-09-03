@@ -1,9 +1,9 @@
 {
   "$schema": "https://modelcontextprotocol.io/schema/server.json",
   "name": "x402-scraper-engine",
-  "title": "x402 Web3 Microtransaction Scraper & Deep Search",
-  "description": "Production HTTP 402 Web3 Microtransaction Scraper ($0.02 USDC) & Deep Search ($0.05 USDC) for AI Agents on Base L2.",
-  "version": "1.1.0",
+  "title": "x402 Web3 Scraper, Deep Search & Twitter Intelligence",
+  "description": "Production HTTP 402 Web3 Microtransaction Scraper ($0.02), Deep Search ($0.05) & Twitter Intelligence ($0.05) for AI Agents on Base L2.",
+  "version": "1.2.0",
   "author": {
     "name": "ASOT Marketing and Investment",
     "url": "https://getguruautomations.com"
@@ -17,7 +17,8 @@
     "mcp",
     "web-scraping",
     "deep-research",
-    "web-search",
+    "twitter-search",
+    "crypto-sentiment",
     "http402",
     "base",
     "usdc",
@@ -56,6 +57,38 @@
           }
         },
         "required": ["query"]
+      }
+    },
+    {
+      "name": "twitter_search",
+      "description": "Searches public tweets, cashtags ($BTC, $BASE), and sentiment across Twitter/X without the $100/mo API fee. Automatically handles HTTP 402 microtransactions (0.05 USDC on Base).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Twitter search query or cashtag (e.g. '$BASE autonomous agents')."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max number of tweets (default: 5)."
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "twitter_profile_lookup",
+      "description": "Extracts public Twitter/X profile bio and recent tweets for any username without the $100/mo API fee. Automatically handles HTTP 402 microtransactions (0.03 USDC on Base).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "description": "The Twitter handle/username (e.g. 'jessepollak')."
+          }
+        },
+        "required": ["username"]
       }
     }
   ]
