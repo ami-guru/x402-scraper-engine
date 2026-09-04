@@ -80,8 +80,8 @@ Add the 6-tool suite to **Claude Desktop**, **Cursor**, **Windsurf**, or **Eliza
 {
   "mcpServers": {
     "x402-agent-intelligence": {
-      "command": "node",
-      "args": ["dist/client/mcp-server.js"],
+      "command": "npx",
+      "args": ["-y", "x402-scraper-engine"],
       "env": {
         "WORKER_URL": "https://x402-scraper-engine.gejoe-tt.workers.dev",
         "BASE_RPC_URL": "https://mainnet.base.org",
@@ -90,6 +90,33 @@ Add the 6-tool suite to **Claude Desktop**, **Cursor**, **Windsurf**, or **Eliza
     }
   }
 }
+```
+
+---
+
+## ⚡ Autonomous Agent TypeScript SDK (3 Lines of Code)
+
+Import into any **Coinbase AgentKit**, **ElizaOS**, **LangChain**, or custom bot:
+
+```typescript
+import { X402Client } from 'x402-scraper-engine/client';
+
+const agentClient = new X402Client({
+  privateKey: process.env.AGENT_PRIVATE_KEY, // Base L2 wallet
+  rpcUrl: 'https://mainnet.base.org'
+});
+
+// 1. Scrape webpage to clean Markdown (0.005 USDC)
+const page = await agentClient.scrape('https://news.ycombinator.com');
+
+// 2. Synthesize token-dense context with Edge Llama 3 (0.025 USDC)
+const digest = await agentClient.digest('https://docs.base.org', 'deployment');
+
+// 3. Search real-time Twitter/X sentiment without $100/mo API fee (0.050 USDC)
+const tweets = await agentClient.searchTwitter('$BASE');
+
+// 4. Security & Phishing audit for DeFi sites (0.080 USDC)
+const security = await agentClient.audit('https://suspicious-dex.com');
 ```
 
 ---

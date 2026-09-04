@@ -1,0 +1,37 @@
+{
+  "sentRecords": [],
+  "queuedLeads": [
+    {
+      "businessName": "Solar Watt Systems Inc",
+      "website": "https://solarwattsystems.com",
+      "category": "Solar Engineering",
+      "location": "Barbados",
+      "verifiedEmail": "support@codemaniack.com",
+      "mxHost": "mxb.mailgun.org",
+      "phone": "+12466221450",
+      "whatsapp": null,
+      "auditGaps": [
+        "Mobile page load latency is high (5.2s vs standard < 1.5s)"
+      ],
+      "customHook": "While reviewing top local listings for Solar Engineering in Barbados, we noticed mobile page load latency is high (5.2s vs standard < 1.5s), which allows nearby competitors to capture top Map Pack rankings and inbound phone leads.",
+      "qualificationScore": 25,
+      "status": "QUALIFIED"
+    },
+    {
+      "businessName": "Austin Roofing & Construction",
+      "website": "https://austinroofingandconstruction.com",
+      "category": "Commercial & Residential Roofing",
+      "location": "Austin, TX",
+      "verifiedEmail": "info@austinroofingandconstruction.com",
+      "mxHost": "mx1-us1.ppe-hosted.com",
+      "phone": null,
+      "whatsapp": null,
+      "auditGaps": [
+        "Mobile page load latency is high (6.1s vs standard < 1.5s)"
+      ],
+      "customHook": "While reviewing top local listings for Commercial & Residential Roofing in Austin, TX, we noticed mobile page load latency is high (6.1s vs standard < 1.5s), which allows nearby competitors to capture top Map Pack rankings and inbound phone leads.",
+      "qualificationScore": 25,
+      "status": "QUALIFIED"
+    }
+  ]
+}

@@ -114,7 +114,7 @@ async function submitPrToRepo(target: { owner: string; repo: string }) {
     body: JSON.stringify({
       title: 'Add x402 Scraper & Deep Search Engine (Base L2 HTTP 402)',
       head: `ami-guru:${newBranchName}`,
-      base: target.branch,
+      base: defaultBranch,
       body: `## Summary\n\nAdds **x402 Scraper & Deep Search Engine** to the MCP server directory.\n\n- **Repository:** https://github.com/ami-guru/x402-scraper-engine\n- **Protocol:** Model Context Protocol (MCP) + HTTP 402 Micropayments on Base L2\n- **Tools Provided:** \n  - \`clean_web_scrape\` ($0.02 USDC) - Converts any webpage into token-efficient Markdown.\n  - \`clean_web_search\` ($0.05 USDC) - Performs multi-source web research & extraction.\n- **License:** MIT\n\nTested and compatible with Claude Desktop, Cursor, and standard MCP clients.`
     })
   });
