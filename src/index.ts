@@ -61,6 +61,69 @@ async function checkAndConsumeGraceTier(request: Request, env: Env): Promise<Gra
   }
 }
 
+interface SystemStats {
+  total_calls: number;
+  free_grace_calls: number;
+  paid_calls: number;
+  usdc_revenue: number;
+  endpoints: {
+    scrape: number;
+    digest: number;
+    audit: number;
+    search: number;
+    twitter_search: number;
+    twitter_profile: number;
+  };
+  last_call_at: string | null;
+}
+
+async function recordUsageMetric(
+  env: Env,
+  endpoint: 'scrape' | 'digest' | 'audit' | 'search' | 'twitter_search' | 'twitter_profile',
+  isPaid: boolean,
+  usdcAmount: number
+): Promise<void> {
+  if (!env.PROCESSED_TXS) return;
+  try {
+    const raw = await env.PROCESSED_TXS.get('metric:stats');
+    let stats: SystemStats = raw
+      ? JSON.parse(raw)
+      : {
+          total_calls: 0,
+          free_grace_calls: 0,
+          paid_calls: 0,
+          usdc_revenue: 0,
+          endpoints: {
+            scrape: 0,
+            digest: 0,
+            audit: 0,
+            search: 0,
+            twitter_search: 0,
+            twitter_profile: 0
+          },
+          last_call_at: null
+        };
+
+    stats.total_calls = (stats.total_calls || 0) + 1;
+    if (isPaid) {
+      stats.paid_calls = (stats.paid_calls || 0) + 1;
+      stats.usdc_revenue = Number(((stats.usdc_revenue || 0) + usdcAmount).toFixed(6));
+    } else {
+      stats.free_grace_calls = (stats.free_grace_calls || 0) + 1;
+    }
+
+    if (!stats.endpoints) {
+      stats.endpoints = { scrape: 0, digest: 0, audit: 0, search: 0, twitter_search: 0, twitter_profile: 0 };
+    }
+    stats.endpoints[endpoint] = (stats.endpoints[endpoint] || 0) + 1;
+    stats.last_call_at = new Date().toISOString();
+
+    await env.PROCESSED_TXS.put('metric:stats', JSON.stringify(stats));
+  } catch (err) {
+    console.error('recordUsageMetric error:', err);
+  }
+}
+
 function getOpenApiSpec(origin: string, env: Env) {
   return {
     openapi: '3.1.0',
@@ -255,6 +318,15 @@ function getOpenApiSpec(origin: string, env: Env) {
             '200': { description: 'Service operational status' }
           }
         }
+      },
+      '/v1/stats': {
+        get: {
+          summary: 'Global engine usage and settlement metrics',
+          description: 'Returns real-time counters of total calls, free grace tier usage, paid on-chain settlements, and USDC revenue.',
+          responses: {
+            '200': { description: 'Live usage statistics' }
+          }
+        }
       }
     }
   };
@@ -271,13 +343,67 @@ export default {
 
     // 2. Health, OpenAPI, llms.txt & Manifest Discovery Routes
     if (request.method === 'GET') {
+      if (url.pathname === '/v1/stats' || url.pathname === '/metrics') {
+        let stats: SystemStats | null = null;
+        if (env.PROCESSED_TXS) {
+          try {
+            const raw = await env.PROCESSED_TXS.get('metric:stats');
+            if (raw) stats = JSON.parse(raw);
+          } catch (e) {
+            // ignore
+          }
+        }
+        return jsonResponse({
+          service: 'x402-scraper-engine',
+          version: '1.4.1',
+          status: 'operational',
+          stats: stats || {
+            total_calls: 0,
+            free_grace_calls: 0,
+            paid_calls: 0,
+            usdc_revenue: 0,
+            endpoints: {
+              scrape: 0,
+              digest: 0,
+              audit: 0,
+              search: 0,
+              twitter_search: 0,
+              twitter_profile: 0
+            },
+            last_call_at: null
+          },
+          protocol: 'x402',
+          network: env.NETWORK || 'base',
+          chain_id: Number(env.CHAIN_ID || 8453),
+          asset: 'USDC',
+          treasury: env.TREASURY_WALLET_ADDRESS,
+          timestamp: new Date().toISOString()
+        });
+      }
+
       if (url.pathname === '/' || url.pathname === '/health' || url.pathname === '/v1/info') {
+        let liveStats: SystemStats | null = null;
+        if (env.PROCESSED_TXS) {
+          try {
+            const raw = await env.PROCESSED_TXS.get('metric:stats');
+            if (raw) liveStats = JSON.parse(raw);
+          } catch (e) {
+            // ignore
+          }
+        }
+
         return jsonResponse({
           service: 'x402-scraper-engine',
           status: 'operational',
-          version: '1.4.0',
+          version: '1.4.1',
           description: 'HTTP 402 Multi-Tier Agent Intelligence, Edge LLM Digest, Security Audit & Web Scraper for AI Agents on Base L2',
           free_grace_calls: 2,
+          stats: liveStats || {
+            total_calls: 0,
+            free_grace_calls: 0,
+            paid_calls: 0,
+            usdc_revenue: 0
+          },
           pricing: {
             scrape_usdc: env.SCRAPE_PRICE_USDC || env.PRICE_USDC || '0.005',
             digest_usdc: env.DIGEST_PRICE_USDC || '0.025',
@@ -297,6 +423,7 @@ export default {
             windowSeconds: Number(env.PAYMENT_WINDOW_SECONDS || 900)
           },
           llms_txt: `${url.origin}/llms.txt`,
+          stats_url: `${url.origin}/v1/stats`,
           bazaar_discovery: `${url.origin}/.well-known/x402.json`,
           docs: 'https://github.com/ami-guru/x402-scraper-engine',
           openapi: `${url.origin}/openapi.json`,
@@ -561,6 +688,7 @@ npx -y x402-scraper-engine
           ? { 'X-Grace-Calls-Remaining': String(graceRemaining) }
           : {};
 
+        ctx.waitUntil(recordUsageMetric(env, 'scrape', !isGraceCall, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
       } catch (scrapeErr: any) {
         return jsonResponse({ error: 'Scrape Execution Failed', message: scrapeErr.message }, 502);
@@ -685,6 +813,7 @@ npx -y x402-scraper-engine
           ? { 'X-Grace-Calls-Remaining': String(graceRemaining) }
           : {};
 
+        ctx.waitUntil(recordUsageMetric(env, 'digest', !isGraceCall, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
       } catch (digestErr: any) {
         return jsonResponse({ error: 'Digest Synthesis Failed', message: digestErr.message }, 502);
@@ -811,6 +940,7 @@ npx -y x402-scraper-engine
           ? { 'X-Grace-Calls-Remaining': String(graceRemaining) }
           : {};
 
+        ctx.waitUntil(recordUsageMetric(env, 'audit', !isGraceCall, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
       } catch (auditErr: any) {
         return jsonResponse({ error: 'Security Audit Failed', message: auditErr.message }, 502);
@@ -934,6 +1064,7 @@ npx -y x402-scraper-engine
           ? { 'X-Grace-Calls-Remaining': String(graceRemaining) }
           : {};
 
+        ctx.waitUntil(recordUsageMetric(env, 'search', !isGraceCall, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
       } catch (searchErr: any) {
         return jsonResponse({ error: 'Search Execution Failed', message: searchErr.message || 'Failed to execute web search.' }, 502);
@@ -1052,6 +1183,7 @@ npx -y x402-scraper-engine
           ? { 'X-Grace-Calls-Remaining': String(graceRemaining) }
           : {};
 
+        ctx.waitUntil(recordUsageMetric(env, 'twitter_search', !isGraceCall, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
       } catch (twitterErr: any) {
         return jsonResponse({ error: 'Twitter Search Failed', message: twitterErr.message }, 502);
@@ -1171,6 +1303,7 @@ npx -y x402-scraper-engine
           ? { 'X-Grace-Calls-Remaining': String(graceRemaining) }
           : {};
 
+        ctx.waitUntil(recordUsageMetric(env, 'twitter_profile', !isGraceCall, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
       } catch (profileErr: any) {
         return jsonResponse({ error: 'Twitter Profile Lookup Failed', message: profileErr.message }, 502);

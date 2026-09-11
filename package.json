@@ -1,6 +1,6 @@
 {
   "name": "x402-scraper-engine",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Production HTTP 402 Web3 Microtransaction Scraper & Model Context Protocol (MCP) Server for AI Agents on Base L2",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
