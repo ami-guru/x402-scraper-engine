@@ -47,7 +47,7 @@ function assert(condition: boolean, testName: string, errorDetail?: string) {
 
 async function runTests() {
   console.log('\n======================================================');
-  console.log('🚀 Running x402-scraper-engine v1.3.0 Mock Test Harness');
+  console.log('🚀 Running x402-scraper-engine v1.4.1 Mock Test Harness');
   console.log('======================================================\n');
 
   const mockEnv: Env = {
@@ -163,7 +163,7 @@ async function runTests() {
   const healthRes = await worker.fetch(healthReq, mockEnv, mockCtx);
   assert(healthRes.status === 200, 'GET /health returns HTTP 200 OK');
   const healthJson: any = await healthRes.json();
-  assert(healthJson.version === '1.3.0', 'GET /health returns v1.3.0');
+  assert(healthJson.version === '1.4.1', 'GET /health returns v1.4.1');
   assert(healthJson.pricing.scrape_usdc === '0.005', 'GET /health returns 0.005 USDC scrape pricing');
   assert(healthJson.pricing.digest_usdc === '0.025', 'GET /health returns 0.025 USDC digest pricing');
   assert(healthJson.pricing.audit_usdc === '0.080', 'GET /health returns 0.080 USDC audit pricing');
@@ -272,14 +272,14 @@ async function runTests() {
 
   if (passedTests === totalTests) {
     console.log('🎉 ALL LOCAL UNIT & INTEGRATION MOCK TESTS PASSED PERFECTLY!\n');
-    process.exit(0);
+    process.exitCode = 0;
   } else {
     console.error('❌ Some tests failed. Please inspect errors above.\n');
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 
 runTests().catch((err) => {
   console.error('Fatal error during test run:', err);
-  process.exit(1);
+  process.exitCode = 1;
 });
