@@ -285,6 +285,12 @@ export default {
         return jsonResponse(getOpenApiSpec(url.origin, env));
       }
 
+      if (url.pathname === '/e9a7c3b2f1d048e58a7b9c6d3e2f1a0b.txt') {
+        return new Response('e9a7c3b2f1d048e58a7b9c6d3e2f1a0b', {
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+        });
+      }
+
       if (url.pathname === '/.well-known/ai-plugin.json') {
         return jsonResponse({
           schema_version: 'v1',
