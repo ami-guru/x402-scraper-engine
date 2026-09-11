@@ -19,6 +19,7 @@
     "build": "tsc",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "prepare": "tsc",
     "test": "tsx test/mock-harness.ts",
     "test:live": "tsx test/test-live.ts",
     "mcp": "tsx client/mcp-server.ts"

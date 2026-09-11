@@ -25,7 +25,7 @@ import * as path from 'path';
 // Load environment variables
 dotenv.config();
 
-const WORKER_URL = process.env.WORKER_URL || 'http://localhost:8787';
+const WORKER_URL = process.env.WORKER_URL || 'https://x402-scraper-engine.gejoe-tt.workers.dev';
 const BASE_RPC_URL = process.env.BASE_RPC_URL || 'https://mainnet.base.org';
 const AGENT_PRIVATE_KEY = (process.env.AGENT_PRIVATE_KEY || '').trim();
 const DEFAULT_USDC_BASE: Address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';

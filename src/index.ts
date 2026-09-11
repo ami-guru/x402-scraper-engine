@@ -458,7 +458,7 @@ Every new client agent receives 2 free trial calls across any endpoint before re
 ## MCP Quickstart
 Run instantly in Claude Code, Cursor, Windsurf, or Codex CLI:
 \`\`\`bash
-npx -y x402-scraper-engine
+npx -y github:ami-guru/x402-scraper-engine
 \`\`\`
 `;
         return new Response(llmsContent, {
