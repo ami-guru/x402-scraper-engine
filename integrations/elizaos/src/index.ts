@@ -1,17 +1,32 @@
-import { Plugin, Action, IAgentRuntime, Memory, State } from "@elizaos/core";
+export interface Action {
+  name: string;
+  similes: string[];
+  description: string;
+  validate: (runtime: any, message: any) => Promise<boolean>;
+  handler: (runtime: any, message: any, state?: any, options?: any, callback?: any) => Promise<boolean>;
+  examples: any[][];
+}
+
+export interface Plugin {
+  name: string;
+  description: string;
+  actions: Action[];
+  evaluators: any[];
+  providers: any[];
+}
 
 export const x402ScraperAction: Action = {
   name: "X402_SCRAPE",
   similes: ["SCRAPE_WEB", "EXTRACT_MARKDOWN", "READ_PAGE", "FETCH_URL"],
   description: "Scrapes any public webpage and extracts clean, token-efficient Markdown for LLM analysis. Includes 2 free trial calls, then uses Base L2 USDC micropayments.",
-  validate: async (runtime: IAgentRuntime, message: Memory) => {
+  validate: async (_runtime: any, _message: any) => {
     return true;
   },
-  handler: async (runtime: IAgentRuntime, message: Memory, state: State, options: any, callback: any) => {
-    const text = message.content.text;
+  handler: async (_runtime: any, message: any, _state: any, _options: any, callback: any) => {
+    const text = message?.content?.text || "";
     const urlMatch = text.match(/https?:\/\/[^\s]+/);
     if (!urlMatch) {
-      callback({ text: "Please provide a valid URL to scrape." });
+      if (callback) callback({ text: "Please provide a valid URL to scrape." });
       return false;
     }
 
@@ -27,25 +42,29 @@ export const x402ScraperAction: Action = {
 
       if (resp.ok) {
         const data = await resp.json() as any;
-        callback({
-          text: `# ${data.title}\n\n${data.markdown}`,
-          action: "X402_SCRAPE"
-        });
+        if (callback) {
+          callback({
+            text: `# ${data.title}\n\n${data.markdown}`,
+            action: "X402_SCRAPE"
+          });
+        }
         return true;
       }
 
       if (resp.status === 402) {
-        callback({
-          text: `HTTP 402 Payment Required: Free trial calls exhausted. Please fund your Base L2 wallet with USDC or provide an X-Payment-Receipt header.`,
-          action: "X402_SCRAPE"
-        });
+        if (callback) {
+          callback({
+            text: "HTTP 402 Payment Required: Free trial calls exhausted. Please fund your Base L2 wallet with USDC or provide an X-Payment-Receipt header.",
+            action: "X402_SCRAPE"
+          });
+        }
         return false;
       }
 
-      callback({ text: `Failed to scrape ${targetUrl} (Status ${resp.status})` });
+      if (callback) callback({ text: `Failed to scrape ${targetUrl} (Status ${resp.status})` });
       return false;
     } catch (err: any) {
-      callback({ text: `Error executing x402 scrape: ${err.message}` });
+      if (callback) callback({ text: `Error executing x402 scrape: ${err.message}` });
       return false;
     }
   },

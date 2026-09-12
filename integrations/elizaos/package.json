@@ -1,0 +1,53 @@
+{
+  "name": "elizaos-plugin-x402-scraper",
+  "version": "1.4.1",
+  "description": "Autonomous HTTP 402 Web Scraper, Edge Llama-3 Digest, Security Audit & Twitter Intelligence for ElizaOS agents on Base L2",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ami-guru/x402-scraper-engine.git",
+    "directory": "integrations/elizaos"
+  },
+  "homepage": "https://x402-scraper-engine.gejoe-tt.workers.dev",
+  "bugs": {
+    "url": "https://github.com/ami-guru/x402-scraper-engine/issues"
+  },
+  "keywords": [
+    "elizaos",
+    "elizaos-plugin",
+    "plugin",
+    "x402",
+    "web-scraper",
+    "llama3",
+    "ai-digest",
+    "base",
+    "usdc",
+    "micropayments",
+    "agentic-payments"
+  ],
+  "author": "ASOT Marketing and Investment <ops@getguruautomations.com>",
+  "license": "MIT",
+  "peerDependencies": {
+    "@elizaos/core": ">=1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,22 +1,47 @@
 {
-  "sentRecords": [],
-  "queuedLeads": [
+  "sentRecords": [
+    {
+      "businessName": "RESSCOTT LTD",
+      "category": "Commercial & Residential Solar Energy",
+      "location": "Trinidad & Tobago",
+      "email": "renewable-energy@resscott.com",
+      "dateSent": "2026-09-04",
+      "timeSent": "12:00:00 AST",
+      "messageId": "manual-dispatch-2026-09-04-resscott",
+      "status": "DELIVERED"
+    },
     {
       "businessName": "Solar Watt Systems Inc",
-      "website": "https://solarwattsystems.com",
       "category": "Solar Engineering",
       "location": "Barbados",
-      "verifiedEmail": "support@codemaniack.com",
-      "mxHost": "mxb.mailgun.org",
-      "phone": "+12466221450",
-      "whatsapp": null,
-      "auditGaps": [
-        "Mobile page load latency is high (5.2s vs standard < 1.5s)"
-      ],
-      "customHook": "While reviewing top local listings for Solar Engineering in Barbados, we noticed mobile page load latency is high (5.2s vs standard < 1.5s), which allows nearby competitors to capture top Map Pack rankings and inbound phone leads.",
-      "qualificationScore": 25,
-      "status": "QUALIFIED"
+      "email": "info@solarwattsystems.com",
+      "dateSent": "2026-09-04",
+      "timeSent": "12:00:00 AST",
+      "messageId": "manual-dispatch-2026-09-04-solarwatt",
+      "status": "DELIVERED"
     },
+    {
+      "businessName": "Solar Watt Systems Inc (Agency Developer)",
+      "category": "Solar Engineering",
+      "location": "Barbados",
+      "email": "support@codemaniack.com",
+      "dateSent": "2026-09-04",
+      "timeSent": "12:00:00 AST",
+      "messageId": "manual-block-2026-09-04-codemaniack",
+      "status": "DELIVERED"
+    },
+    {
+      "businessName": "Calgary Elite Roofing",
+      "category": "Premium Residential Roofing",
+      "location": "Calgary, AB",
+      "email": "reception@calgaryeliteroofing.ca",
+      "dateSent": "2026-09-04",
+      "timeSent": "12:00:00 AST",
+      "messageId": "manual-dispatch-2026-09-04-calgaryelite",
+      "status": "DELIVERED"
+    }
+  ],
+  "queuedLeads": [
     {
       "businessName": "Austin Roofing & Construction",
       "website": "https://austinroofingandconstruction.com",
