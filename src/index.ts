@@ -15,15 +15,48 @@ import {
 import { validateUrl, scrapeToMarkdown, searchAndScrapeToMarkdown } from './scraper';
 import { synthesizeDigest, auditSecuritySignal } from './digest';
 import { searchTwitter, getTwitterProfile } from './twitter';
-import { verifyBasePayment, checkAndRecordReplay, createPaymentChallengeHeaders } from './verifier';
+import { verifyBasePayment, checkAndRecordReplay, createPaymentChallengeHeaders, createStandardPaymentChallenge, PaymentChallengeConfig } from './verifier';
 import { pingPublicIndexers } from './discovery';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Payment-Receipt, X-Payment-Version, X-Payment-Network, PAYMENT-REQUIRED',
-  'Access-Control-Expose-Headers': 'PAYMENT-REQUIRED, X-Payment-Version, X-Payment-Network, X-Payment-Chain-Id, X-Payment-Asset, X-Payment-Asset-Address, X-Payment-Amount, X-Payment-To, X-Payment-Window, X-Grace-Calls-Remaining'
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Payment-Receipt, X-Payment-Version, X-Payment-Network, PAYMENT-REQUIRED, Payment-Required, PAYMENT-SIGNATURE, payment-signature',
+  'Access-Control-Expose-Headers': 'PAYMENT-REQUIRED, Payment-Required, PAYMENT-RESPONSE, Payment-Response, X-Payment-Version, X-Payment-Network, X-Payment-Chain-Id, X-Payment-Asset, X-Payment-Asset-Address, X-Payment-Amount, X-Payment-To, X-Payment-Window, X-Grace-Calls-Remaining'
 };
+
+async function settleFacilitatorPayment(
+  paymentSignatureB64: string,
+  requirements: any
+): Promise<{ valid: boolean; txHash?: string; payer?: string; error?: string }> {
+  try {
+    const rawJson = typeof atob === 'function' ? atob(paymentSignatureB64) : Buffer.from(paymentSignatureB64, 'base64').toString('utf-8');
+    const paymentPayload = JSON.parse(rawJson);
+
+    const settleResp = await fetch('https://facilitator.payai.network/settle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'x402-Scraper-Worker/1.4.1' },
+      body: JSON.stringify({
+        paymentPayload,
+        paymentRequirements: requirements
+      })
+    });
+
+    if (!settleResp.ok) {
+      const errText = await settleResp.text();
+      return { valid: false, error: `Facilitator settlement returned HTTP ${settleResp.status}: ${errText}` };
+    }
+
+    const resJson = await settleResp.json() as any;
+    if (resJson.success && resJson.transaction) {
+      return { valid: true, txHash: resJson.transaction, payer: resJson.payer };
+    } else {
+      return { valid: false, error: resJson.errorReason || resJson.invalidReason || 'Settlement failed on facilitator' };
+    }
+  } catch (err: any) {
+    return { valid: false, error: `Failed to process PAYMENT-SIGNATURE: ${err.message}` };
+  }
+}
 
 function jsonResponse(data: any, status = 200, extraHeaders: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data, null, 2), {
@@ -592,6 +625,7 @@ npx -y github:ami-guru/x402-scraper-engine
 
       const receiptHeader = request.headers.get('X-Payment-Receipt');
       const authHeader = request.headers.get('Authorization');
+      const paymentSignature = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('payment-signature');
       let txHash = receiptHeader?.trim();
 
       if (!txHash && authHeader && authHeader.startsWith('Bearer ')) {
@@ -599,48 +633,69 @@ npx -y github:ami-guru/x402-scraper-engine
       }
 
       const amountUsdc = env.SCRAPE_PRICE_USDC || env.PRICE_USDC || '0.005';
-      const paymentHeaders = createPaymentChallengeHeaders({
+      const amountUnits = env.SCRAPE_PRICE_UNITS || '5000';
+      const challenge = createStandardPaymentChallenge({
         amountUsdc,
+        amountUnits,
         recipient: env.TREASURY_WALLET_ADDRESS,
         network: env.NETWORK || 'base',
         chainId: env.CHAIN_ID || 8453,
         contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900
+        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900,
+        resourceUrl: `${url.origin}/v1/scrape`,
+        resourceDescription: 'Zero-bloat HTML to Markdown extraction for token-efficient LLM context on Base L2',
+        serviceName: 'x402 Scraper Engine',
+        tags: ['scraper', 'markdown', 'web3', 'base', 'usdc'],
+        inputBody: { url: 'https://example.com' },
+        inputProperties: { url: { type: 'string', format: 'uri' } },
+        inputRequired: ['url'],
+        outputExample: {
+          success: true,
+          url: 'https://example.com',
+          title: 'Example Domain',
+          markdown: '# Example Domain\n\nThis domain is for illustrative examples.',
+          tokens_estimated: 50,
+          payment: { tx_hash: '0x...', amount: '0.005', asset: 'USDC' }
+        }
       });
+      const paymentHeaders = challenge.headers;
 
       let isGraceCall = false;
       let graceRemaining = 0;
+      let paymentResponseHeaders: Record<string, string> = {};
 
-      if (!txHash) {
+      if (!txHash && !paymentSignature) {
         const grace = await checkAndConsumeGraceTier(request, env);
         if (grace.isGrace) {
           isGraceCall = true;
           graceRemaining = grace.remaining;
         } else {
-          return jsonResponse(
-            {
-              error: 'Payment Required',
-              protocol: 'x402',
-              spec_version: '2.0',
-              message: `This scrape endpoint requires an on-chain microtransaction of ${amountUsdc} USDC on Base. Free grace calls exhausted.`,
-              payment: {
-                network: env.NETWORK || 'base',
-                chain_id: Number(env.CHAIN_ID || 8453),
-                asset: 'USDC',
-                amount_usdc: amountUsdc,
-                recipient: env.TREASURY_WALLET_ADDRESS,
-                instruction: `Transfer ${amountUsdc} USDC to ${env.TREASURY_WALLET_ADDRESS} on Base (Chain ID 8453), then resubmit with header 'X-Payment-Receipt: <tx_hash>'`
-              }
-            },
-            402,
-            paymentHeaders
-          );
+          return jsonResponse(challenge.responseBody, 402, paymentHeaders);
         }
       }
 
       let settledAt = new Date().toISOString();
-      if (!isGraceCall) {
-        const requiredUnits = env.SCRAPE_PRICE_UNITS ? BigInt(env.SCRAPE_PRICE_UNITS) : 5000n;
+      if (paymentSignature) {
+        const settle = await settleFacilitatorPayment(paymentSignature, challenge.standardPayload.accepts[0]);
+        if (!settle.valid) {
+          return jsonResponse({ error: 'Payment Verification Failed', details: settle.error }, 402, paymentHeaders);
+        }
+        txHash = settle.txHash!;
+        const replayCheck = await checkAndRecordReplay(txHash, env, {
+          targetUrl: body.url,
+          action: 'scrape',
+          sender: settle.payer,
+          amountUnits,
+          timestamp: Math.floor(Date.now() / 1000)
+        });
+        if (replayCheck.replayed) {
+          return jsonResponse({ error: 'Replay Detected', message: replayCheck.error || 'Transaction already redeemed.' }, 400);
+        }
+        const b64Resp = typeof btoa === 'function' ? btoa(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })) : Buffer.from(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })).toString('base64');
+        paymentResponseHeaders = { 'PAYMENT-RESPONSE': b64Resp };
+        settledAt = new Date().toISOString();
+      } else if (!isGraceCall) {
+        const requiredUnits = BigInt(amountUnits);
         const verification = await verifyBasePayment(txHash!, env, requiredUnits);
         if (!verification.valid) {
           return jsonResponse({ error: 'Payment Verification Failed', details: verification.error }, 402, paymentHeaders);
@@ -684,9 +739,10 @@ npx -y github:ami-guru/x402-scraper-engine
               }
         };
 
-        const extraHeaders: Record<string, string> = isGraceCall
-          ? { 'X-Grace-Calls-Remaining': String(graceRemaining) }
-          : {};
+        const extraHeaders: Record<string, string> = {
+          ...paymentResponseHeaders,
+          ...(isGraceCall ? { 'X-Grace-Calls-Remaining': String(graceRemaining) } : {})
+        };
 
         ctx.waitUntil(recordUsageMetric(env, 'scrape', !isGraceCall, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
@@ -715,6 +771,7 @@ npx -y github:ami-guru/x402-scraper-engine
 
       const receiptHeader = request.headers.get('X-Payment-Receipt');
       const authHeader = request.headers.get('Authorization');
+      const paymentSignature = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('payment-signature');
       let txHash = receiptHeader?.trim();
 
       if (!txHash && authHeader && authHeader.startsWith('Bearer ')) {
@@ -722,48 +779,70 @@ npx -y github:ami-guru/x402-scraper-engine
       }
 
       const amountUsdc = env.DIGEST_PRICE_USDC || '0.025';
-      const paymentHeaders = createPaymentChallengeHeaders({
+      const amountUnits = env.DIGEST_PRICE_UNITS || '25000';
+      const challenge = createStandardPaymentChallenge({
         amountUsdc,
+        amountUnits,
         recipient: env.TREASURY_WALLET_ADDRESS,
         network: env.NETWORK || 'base',
         chainId: env.CHAIN_ID || 8453,
         contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900
+        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900,
+        resourceUrl: `${url.origin}/v1/digest`,
+        resourceDescription: 'Edge LLM Context Synthesis (Llama-3-8B) extracting executive summary, key takeaways & structured entities on Base L2',
+        serviceName: 'x402 Scraper Engine',
+        tags: ['ai-synthesis', 'llama3', 'context-compression', 'digest', 'base', 'usdc'],
+        inputBody: { url: 'https://example.com', prompt: 'Summarize key points' },
+        inputProperties: { url: { type: 'string', format: 'uri' }, prompt: { type: 'string' } },
+        inputRequired: ['url'],
+        outputExample: {
+          success: true,
+          url: 'https://example.com',
+          title: 'Example Domain',
+          digest: 'Executive Summary: ...',
+          model: '@cf/meta/llama-3-8b-instruct',
+          latency_ms: 320,
+          payment: { tx_hash: '0x...', amount: '0.025', asset: 'USDC' }
+        }
       });
+      const paymentHeaders = challenge.headers;
 
       let isGraceCall = false;
       let graceRemaining = 0;
+      let paymentResponseHeaders: Record<string, string> = {};
 
-      if (!txHash) {
+      if (!txHash && !paymentSignature) {
         const grace = await checkAndConsumeGraceTier(request, env);
         if (grace.isGrace) {
           isGraceCall = true;
           graceRemaining = grace.remaining;
         } else {
-          return jsonResponse(
-            {
-              error: 'Payment Required',
-              protocol: 'x402',
-              spec_version: '2.0',
-              message: `This edge LLM digest endpoint requires an on-chain microtransaction of ${amountUsdc} USDC on Base. Free grace calls exhausted.`,
-              payment: {
-                network: env.NETWORK || 'base',
-                chain_id: Number(env.CHAIN_ID || 8453),
-                asset: 'USDC',
-                amount_usdc: amountUsdc,
-                recipient: env.TREASURY_WALLET_ADDRESS,
-                instruction: `Transfer ${amountUsdc} USDC to ${env.TREASURY_WALLET_ADDRESS} on Base (Chain ID 8453), then resubmit with header 'X-Payment-Receipt: <tx_hash>'`
-              }
-            },
-            402,
-            paymentHeaders
-          );
+          return jsonResponse(challenge.responseBody, 402, paymentHeaders);
         }
       }
 
       let settledAt = new Date().toISOString();
-      if (!isGraceCall) {
-        const requiredUnits = env.DIGEST_PRICE_UNITS ? BigInt(env.DIGEST_PRICE_UNITS) : 25000n;
+      if (paymentSignature) {
+        const settle = await settleFacilitatorPayment(paymentSignature, challenge.standardPayload.accepts[0]);
+        if (!settle.valid) {
+          return jsonResponse({ error: 'Payment Verification Failed', details: settle.error }, 402, paymentHeaders);
+        }
+        txHash = settle.txHash!;
+        const replayCheck = await checkAndRecordReplay(txHash, env, {
+          targetUrl: body.url,
+          action: 'digest',
+          sender: settle.payer,
+          amountUnits,
+          timestamp: Math.floor(Date.now() / 1000)
+        });
+        if (replayCheck.replayed) {
+          return jsonResponse({ error: 'Replay Detected', message: replayCheck.error || 'Transaction already redeemed.' }, 400);
+        }
+        const b64Resp = typeof btoa === 'function' ? btoa(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })) : Buffer.from(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })).toString('base64');
+        paymentResponseHeaders = { 'PAYMENT-RESPONSE': b64Resp };
+        settledAt = new Date().toISOString();
+      } else if (!isGraceCall) {
+        const requiredUnits = BigInt(amountUnits);
         const verification = await verifyBasePayment(txHash!, env, requiredUnits);
         if (!verification.valid) {
           return jsonResponse({ error: 'Payment Verification Failed', details: verification.error }, 402, paymentHeaders);
@@ -809,9 +888,10 @@ npx -y github:ami-guru/x402-scraper-engine
               }
         };
 
-        const extraHeaders: Record<string, string> = isGraceCall
-          ? { 'X-Grace-Calls-Remaining': String(graceRemaining) }
-          : {};
+        const extraHeaders: Record<string, string> = {
+          ...paymentResponseHeaders,
+          ...(isGraceCall ? { 'X-Grace-Calls-Remaining': String(graceRemaining) } : {})
+        };
 
         ctx.waitUntil(recordUsageMetric(env, 'digest', !isGraceCall, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
@@ -840,6 +920,7 @@ npx -y github:ami-guru/x402-scraper-engine
 
       const receiptHeader = request.headers.get('X-Payment-Receipt');
       const authHeader = request.headers.get('Authorization');
+      const paymentSignature = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('payment-signature');
       let txHash = receiptHeader?.trim();
 
       if (!txHash && authHeader && authHeader.startsWith('Bearer ')) {
@@ -847,48 +928,74 @@ npx -y github:ami-guru/x402-scraper-engine
       }
 
       const amountUsdc = env.AUDIT_PRICE_USDC || '0.080';
-      const paymentHeaders = createPaymentChallengeHeaders({
+      const amountUnits = env.AUDIT_PRICE_UNITS || '80000';
+      const challenge = createStandardPaymentChallenge({
         amountUsdc,
+        amountUnits,
         recipient: env.TREASURY_WALLET_ADDRESS,
         network: env.NETWORK || 'base',
         chainId: env.CHAIN_ID || 8453,
         contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900
+        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900,
+        resourceUrl: `${url.origin}/v1/audit`,
+        resourceDescription: 'Security, credibility, and phishing risk analysis for web domains and smart contracts on Base L2',
+        serviceName: 'x402 Scraper Engine',
+        tags: ['security', 'audit', 'credibility', 'risk-analysis', 'base', 'usdc'],
+        inputBody: { url: 'https://example.com' },
+        inputProperties: { url: { type: 'string', format: 'uri' } },
+        inputRequired: ['url'],
+        outputExample: {
+          success: true,
+          url: 'https://example.com',
+          title: 'Example Domain',
+          credibility_score: 95,
+          risk_level: 'low',
+          security_flags: [],
+          credibility_analysis: 'Domain is authoritative and established.',
+          technical_signals: { has_ssl: true },
+          markdown: '# Audit Report\n\nSecurity Status: Clear',
+          tokens_estimated: 120,
+          payment: { tx_hash: '0x...', amount: '0.080', asset: 'USDC' }
+        }
       });
+      const paymentHeaders = challenge.headers;
 
       let isGraceCall = false;
       let graceRemaining = 0;
+      let paymentResponseHeaders: Record<string, string> = {};
 
-      if (!txHash) {
+      if (!txHash && !paymentSignature) {
         const grace = await checkAndConsumeGraceTier(request, env);
         if (grace.isGrace) {
           isGraceCall = true;
           graceRemaining = grace.remaining;
         } else {
-          return jsonResponse(
-            {
-              error: 'Payment Required',
-              protocol: 'x402',
-              spec_version: '2.0',
-              message: `This security audit endpoint requires an on-chain microtransaction of ${amountUsdc} USDC on Base. Free grace calls exhausted.`,
-              payment: {
-                network: env.NETWORK || 'base',
-                chain_id: Number(env.CHAIN_ID || 8453),
-                asset: 'USDC',
-                amount_usdc: amountUsdc,
-                recipient: env.TREASURY_WALLET_ADDRESS,
-                instruction: `Transfer ${amountUsdc} USDC to ${env.TREASURY_WALLET_ADDRESS} on Base (Chain ID 8453), then resubmit with header 'X-Payment-Receipt: <tx_hash>'`
-              }
-            },
-            402,
-            paymentHeaders
-          );
+          return jsonResponse(challenge.responseBody, 402, paymentHeaders);
         }
       }
 
       let settledAt = new Date().toISOString();
-      if (!isGraceCall) {
-        const requiredUnits = env.AUDIT_PRICE_UNITS ? BigInt(env.AUDIT_PRICE_UNITS) : 80000n;
+      if (paymentSignature) {
+        const settle = await settleFacilitatorPayment(paymentSignature, challenge.standardPayload.accepts[0]);
+        if (!settle.valid) {
+          return jsonResponse({ error: 'Payment Verification Failed', details: settle.error }, 402, paymentHeaders);
+        }
+        txHash = settle.txHash!;
+        const replayCheck = await checkAndRecordReplay(txHash, env, {
+          targetUrl: body.url,
+          action: 'audit',
+          sender: settle.payer,
+          amountUnits,
+          timestamp: Math.floor(Date.now() / 1000)
+        });
+        if (replayCheck.replayed) {
+          return jsonResponse({ error: 'Replay Detected', message: replayCheck.error || 'Transaction already redeemed.' }, 400);
+        }
+        const b64Resp = typeof btoa === 'function' ? btoa(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })) : Buffer.from(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })).toString('base64');
+        paymentResponseHeaders = { 'PAYMENT-RESPONSE': b64Resp };
+        settledAt = new Date().toISOString();
+      } else if (!isGraceCall) {
+        const requiredUnits = BigInt(amountUnits);
         const verification = await verifyBasePayment(txHash!, env, requiredUnits);
         if (!verification.valid) {
           return jsonResponse({ error: 'Payment Verification Failed', details: verification.error }, 402, paymentHeaders);
@@ -936,9 +1043,10 @@ npx -y github:ami-guru/x402-scraper-engine
               }
         };
 
-        const extraHeaders: Record<string, string> = isGraceCall
-          ? { 'X-Grace-Calls-Remaining': String(graceRemaining) }
-          : {};
+        const extraHeaders: Record<string, string> = {
+          ...paymentResponseHeaders,
+          ...(isGraceCall ? { 'X-Grace-Calls-Remaining': String(graceRemaining) } : {})
+        };
 
         ctx.waitUntil(recordUsageMetric(env, 'audit', !isGraceCall, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
@@ -968,6 +1076,7 @@ npx -y github:ami-guru/x402-scraper-engine
 
       const receiptHeader = request.headers.get('X-Payment-Receipt');
       const authHeader = request.headers.get('Authorization');
+      const paymentSignature = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('payment-signature');
       let txHash = receiptHeader?.trim();
 
       if (!txHash && authHeader && authHeader.startsWith('Bearer ')) {
@@ -975,49 +1084,69 @@ npx -y github:ami-guru/x402-scraper-engine
       }
 
       const amountUsdc = env.SEARCH_PRICE_USDC || '0.050';
-      const searchPaymentHeaders = createPaymentChallengeHeaders({
+      const amountUnits = env.SEARCH_PRICE_UNITS || '50000';
+      const challenge = createStandardPaymentChallenge({
         amountUsdc,
+        amountUnits,
         recipient: env.TREASURY_WALLET_ADDRESS,
         network: env.NETWORK || 'base',
         chainId: env.CHAIN_ID || 8453,
         contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900
+        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900,
+        resourceUrl: `${url.origin}/v1/search`,
+        resourceDescription: 'Multi-source deep web research and synthesized Markdown extraction on Base L2',
+        serviceName: 'x402 Scraper Engine',
+        tags: ['search', 'deep-research', 'web', 'base', 'usdc'],
+        inputBody: { query: 'crypto agents', limit: 5 },
+        inputProperties: { query: { type: 'string' }, limit: { type: 'integer' } },
+        inputRequired: ['query'],
+        outputExample: {
+          success: true,
+          query: 'crypto agents',
+          total_results: 5,
+          results: [],
+          tokens_estimated: 150,
+          payment: { tx_hash: '0x...', amount: '0.050', asset: 'USDC' }
+        }
       });
+      const searchPaymentHeaders = challenge.headers;
 
       let isGraceCall = false;
       let graceRemaining = 0;
+      let paymentResponseHeaders: Record<string, string> = {};
 
-      if (!txHash) {
+      if (!txHash && !paymentSignature) {
         const grace = await checkAndConsumeGraceTier(request, env);
         if (grace.isGrace) {
           isGraceCall = true;
           graceRemaining = grace.remaining;
         } else {
-          return jsonResponse(
-            {
-              error: 'Payment Required',
-              message: `This search & scrape endpoint requires an on-chain microtransaction of ${amountUsdc} USDC on Base. Free grace calls exhausted.`,
-              payment: {
-                version: 1,
-                network: env.NETWORK || 'base',
-                chainId: Number(env.CHAIN_ID || 8453),
-                asset: 'USDC',
-                contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-                amount: amountUsdc,
-                recipient: env.TREASURY_WALLET_ADDRESS,
-                windowSeconds: Number(env.PAYMENT_WINDOW_SECONDS || 900),
-                instruction: `Transfer ${amountUsdc} USDC to ${env.TREASURY_WALLET_ADDRESS} on Base (Chain ID 8453), then resubmit with header 'X-Payment-Receipt: <tx_hash>'`
-              }
-            },
-            402,
-            searchPaymentHeaders
-          );
+          return jsonResponse(challenge.responseBody, 402, searchPaymentHeaders);
         }
       }
 
       let settledAt = new Date().toISOString();
-      if (!isGraceCall) {
-        const requiredUnits = env.SEARCH_PRICE_UNITS ? BigInt(env.SEARCH_PRICE_UNITS) : 50000n;
+      if (paymentSignature) {
+        const settle = await settleFacilitatorPayment(paymentSignature, challenge.standardPayload.accepts[0]);
+        if (!settle.valid) {
+          return jsonResponse({ error: 'Payment Verification Failed', details: settle.error }, 402, searchPaymentHeaders);
+        }
+        txHash = settle.txHash!;
+        const replayCheck = await checkAndRecordReplay(txHash, env, {
+          query: body.query,
+          action: 'search',
+          sender: settle.payer,
+          amountUnits,
+          timestamp: Math.floor(Date.now() / 1000)
+        });
+        if (replayCheck.replayed) {
+          return jsonResponse({ error: 'Replay Detected', message: replayCheck.error || 'Transaction has already been redeemed.' }, 400);
+        }
+        const b64Resp = typeof btoa === 'function' ? btoa(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })) : Buffer.from(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })).toString('base64');
+        paymentResponseHeaders = { 'PAYMENT-RESPONSE': b64Resp };
+        settledAt = new Date().toISOString();
+      } else if (!isGraceCall) {
+        const requiredUnits = BigInt(amountUnits);
         const verification = await verifyBasePayment(txHash!, env, requiredUnits);
         if (!verification.valid) {
           return jsonResponse({ error: 'Payment Verification Failed', details: verification.error }, 402, searchPaymentHeaders);
@@ -1060,9 +1189,10 @@ npx -y github:ami-guru/x402-scraper-engine
               }
         };
 
-        const extraHeaders: Record<string, string> = isGraceCall
-          ? { 'X-Grace-Calls-Remaining': String(graceRemaining) }
-          : {};
+        const extraHeaders: Record<string, string> = {
+          ...paymentResponseHeaders,
+          ...(isGraceCall ? { 'X-Grace-Calls-Remaining': String(graceRemaining) } : {})
+        };
 
         ctx.waitUntil(recordUsageMetric(env, 'search', !isGraceCall, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
@@ -1086,6 +1216,7 @@ npx -y github:ami-guru/x402-scraper-engine
 
       const receiptHeader = request.headers.get('X-Payment-Receipt');
       const authHeader = request.headers.get('Authorization');
+      const paymentSignature = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('payment-signature');
       let txHash = receiptHeader?.trim();
 
       if (!txHash && authHeader && authHeader.startsWith('Bearer ')) {
@@ -1093,49 +1224,68 @@ npx -y github:ami-guru/x402-scraper-engine
       }
 
       const amountUsdc = env.TWITTER_SEARCH_PRICE_USDC || '0.050';
-      const twitterHeaders = createPaymentChallengeHeaders({
+      const amountUnits = env.TWITTER_SEARCH_PRICE_UNITS || '50000';
+      const challenge = createStandardPaymentChallenge({
         amountUsdc,
+        amountUnits,
         recipient: env.TREASURY_WALLET_ADDRESS,
         network: env.NETWORK || 'base',
         chainId: env.CHAIN_ID || 8453,
         contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900
+        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900,
+        resourceUrl: `${url.origin}/v1/twitter/search`,
+        resourceDescription: 'Cashtag and keyword Twitter search with real-time sentiment extraction on Base L2',
+        serviceName: 'x402 Scraper Engine',
+        tags: ['twitter', 'sentiment', 'social', 'base', 'usdc'],
+        inputBody: { query: '$BASE', maxResults: 10 },
+        inputProperties: { query: { type: 'string' }, maxResults: { type: 'integer' } },
+        inputRequired: ['query'],
+        outputExample: {
+          success: true,
+          query: '$BASE',
+          tweets: [],
+          tokens_estimated: 100,
+          payment: { tx_hash: '0x...', amount: '0.050', asset: 'USDC' }
+        }
       });
+      const twitterHeaders = challenge.headers;
 
       let isGraceCall = false;
       let graceRemaining = 0;
+      let paymentResponseHeaders: Record<string, string> = {};
 
-      if (!txHash) {
+      if (!txHash && !paymentSignature) {
         const grace = await checkAndConsumeGraceTier(request, env);
         if (grace.isGrace) {
           isGraceCall = true;
           graceRemaining = grace.remaining;
         } else {
-          return jsonResponse(
-            {
-              error: 'Payment Required',
-              message: `This Twitter search endpoint requires an on-chain microtransaction of ${amountUsdc} USDC on Base. Free grace calls exhausted.`,
-              payment: {
-                version: 1,
-                network: env.NETWORK || 'base',
-                chainId: Number(env.CHAIN_ID || 8453),
-                asset: 'USDC',
-                contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-                amount: amountUsdc,
-                recipient: env.TREASURY_WALLET_ADDRESS,
-                windowSeconds: Number(env.PAYMENT_WINDOW_SECONDS || 900),
-                instruction: `Transfer ${amountUsdc} USDC to ${env.TREASURY_WALLET_ADDRESS} on Base (Chain ID 8453), then resubmit with header 'X-Payment-Receipt: <tx_hash>'`
-              }
-            },
-            402,
-            twitterHeaders
-          );
+          return jsonResponse(challenge.responseBody, 402, twitterHeaders);
         }
       }
 
       let settledAt = new Date().toISOString();
-      if (!isGraceCall) {
-        const requiredUnits = env.TWITTER_SEARCH_PRICE_UNITS ? BigInt(env.TWITTER_SEARCH_PRICE_UNITS) : 50000n;
+      if (paymentSignature) {
+        const settle = await settleFacilitatorPayment(paymentSignature, challenge.standardPayload.accepts[0]);
+        if (!settle.valid) {
+          return jsonResponse({ error: 'Payment Verification Failed', details: settle.error }, 402, twitterHeaders);
+        }
+        txHash = settle.txHash!;
+        const replayCheck = await checkAndRecordReplay(txHash, env, {
+          query: body.query,
+          action: 'twitter_search',
+          sender: settle.payer,
+          amountUnits,
+          timestamp: Math.floor(Date.now() / 1000)
+        });
+        if (replayCheck.replayed) {
+          return jsonResponse({ error: 'Replay Detected', message: replayCheck.error || 'Transaction already redeemed.' }, 400);
+        }
+        const b64Resp = typeof btoa === 'function' ? btoa(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })) : Buffer.from(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })).toString('base64');
+        paymentResponseHeaders = { 'PAYMENT-RESPONSE': b64Resp };
+        settledAt = new Date().toISOString();
+      } else if (!isGraceCall) {
+        const requiredUnits = BigInt(amountUnits);
         const verification = await verifyBasePayment(txHash!, env, requiredUnits);
         if (!verification.valid) {
           return jsonResponse({ error: 'Payment Verification Failed', details: verification.error }, 402, twitterHeaders);
@@ -1179,9 +1329,10 @@ npx -y github:ami-guru/x402-scraper-engine
               }
         };
 
-        const extraHeaders: Record<string, string> = isGraceCall
-          ? { 'X-Grace-Calls-Remaining': String(graceRemaining) }
-          : {};
+        const extraHeaders: Record<string, string> = {
+          ...paymentResponseHeaders,
+          ...(isGraceCall ? { 'X-Grace-Calls-Remaining': String(graceRemaining) } : {})
+        };
 
         ctx.waitUntil(recordUsageMetric(env, 'twitter_search', !isGraceCall, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
@@ -1205,6 +1356,7 @@ npx -y github:ami-guru/x402-scraper-engine
 
       const receiptHeader = request.headers.get('X-Payment-Receipt');
       const authHeader = request.headers.get('Authorization');
+      const paymentSignature = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('payment-signature');
       let txHash = receiptHeader?.trim();
 
       if (!txHash && authHeader && authHeader.startsWith('Bearer ')) {
@@ -1212,48 +1364,68 @@ npx -y github:ami-guru/x402-scraper-engine
       }
 
       const amountUsdc = env.TWITTER_PROFILE_PRICE_USDC || '0.030';
-      const profileHeaders = createPaymentChallengeHeaders({
+      const amountUnits = env.TWITTER_PROFILE_PRICE_UNITS || '30000';
+      const challenge = createStandardPaymentChallenge({
         amountUsdc,
+        amountUnits,
         recipient: env.TREASURY_WALLET_ADDRESS,
         network: env.NETWORK || 'base',
         chainId: env.CHAIN_ID || 8453,
         contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900
+        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900,
+        resourceUrl: `${url.origin}/v1/twitter/profile`,
+        resourceDescription: 'Twitter/X user profile and recent tweet timeline extraction on Base L2',
+        serviceName: 'x402 Scraper Engine',
+        tags: ['twitter', 'profile', 'social', 'base', 'usdc'],
+        inputBody: { username: 'base' },
+        inputProperties: { username: { type: 'string' } },
+        inputRequired: ['username'],
+        outputExample: {
+          success: true,
+          username: 'base',
+          bio: 'Base is a secure, low-cost, builder-friendly Ethereum L2.',
+          tweets: [],
+          tokens_estimated: 100,
+          payment: { tx_hash: '0x...', amount: '0.030', asset: 'USDC' }
+        }
       });
+      const profileHeaders = challenge.headers;
 
       let isGraceCall = false;
       let graceRemaining = 0;
+      let paymentResponseHeaders: Record<string, string> = {};
 
-      if (!txHash) {
+      if (!txHash && !paymentSignature) {
         const grace = await checkAndConsumeGraceTier(request, env);
         if (grace.isGrace) {
           isGraceCall = true;
           graceRemaining = grace.remaining;
         } else {
-          return jsonResponse(
-            {
-              error: 'Payment Required',
-              message: `This Twitter profile endpoint requires an on-chain microtransaction of ${amountUsdc} USDC on Base. Free grace calls exhausted.`,
-              payment: {
-                version: 1,
-                network: env.NETWORK || 'base',
-                chainId: Number(env.CHAIN_ID || 8453),
-                asset: 'USDC',
-                contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-                amount: amountUsdc,
-                recipient: env.TREASURY_WALLET_ADDRESS,
-                windowSeconds: Number(env.PAYMENT_WINDOW_SECONDS || 900),
-                instruction: `Transfer ${amountUsdc} USDC to ${env.TREASURY_WALLET_ADDRESS} on Base (Chain ID 8453), then resubmit with header 'X-Payment-Receipt: <tx_hash>'`
-              }
-            },
-            402,
-            profileHeaders
-          );
+          return jsonResponse(challenge.responseBody, 402, profileHeaders);
         }
       }
 
       let settledAt = new Date().toISOString();
-      if (!isGraceCall) {
+      if (paymentSignature) {
+        const settle = await settleFacilitatorPayment(paymentSignature, challenge.standardPayload.accepts[0]);
+        if (!settle.valid) {
+          return jsonResponse({ error: 'Payment Verification Failed', details: settle.error }, 402, profileHeaders);
+        }
+        txHash = settle.txHash!;
+        const replayCheck = await checkAndRecordReplay(txHash, env, {
+          username: body.username,
+          action: 'twitter_profile',
+          sender: settle.payer,
+          amountUnits,
+          timestamp: Math.floor(Date.now() / 1000)
+        });
+        if (replayCheck.replayed) {
+          return jsonResponse({ error: 'Replay Detected', message: replayCheck.error || 'Transaction already redeemed.' }, 400);
+        }
+        const b64Resp = typeof btoa === 'function' ? btoa(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })) : Buffer.from(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })).toString('base64');
+        paymentResponseHeaders = { 'PAYMENT-RESPONSE': b64Resp };
+        settledAt = new Date().toISOString();
+      } else if (!isGraceCall) {
         const requiredUnits = env.TWITTER_PROFILE_PRICE_UNITS ? BigInt(env.TWITTER_PROFILE_PRICE_UNITS) : 30000n;
         const verification = await verifyBasePayment(txHash!, env, requiredUnits);
         if (!verification.valid) {
@@ -1299,9 +1471,10 @@ npx -y github:ami-guru/x402-scraper-engine
               }
         };
 
-        const extraHeaders: Record<string, string> = isGraceCall
-          ? { 'X-Grace-Calls-Remaining': String(graceRemaining) }
-          : {};
+        const extraHeaders: Record<string, string> = {
+          ...paymentResponseHeaders,
+          ...(isGraceCall ? { 'X-Grace-Calls-Remaining': String(graceRemaining) } : {})
+        };
 
         ctx.waitUntil(recordUsageMetric(env, 'twitter_profile', !isGraceCall, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);

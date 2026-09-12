@@ -29,42 +29,173 @@ function topicToAddress(topic: string): string {
   return '0x' + clean.slice(24);
 }
 
-/**
- * Formats standard x402 V2 and backward-compatible payment headers
- */
-export function createPaymentChallengeHeaders(config: {
+export interface PaymentChallengeConfig {
   amountUsdc: string;
+  amountUnits?: string;
   recipient: string;
+  resourceUrl?: string;
+  resourceDescription?: string;
+  serviceName?: string;
+  tags?: string[];
+  inputBody?: Record<string, any>;
+  inputProperties?: Record<string, any>;
+  inputRequired?: string[];
+  outputExample?: Record<string, any>;
   network?: string;
   chainId?: number | string;
   contractAddress?: string;
   windowSeconds?: number | string;
-}): Record<string, string> {
-  const v2Payload = {
+}
+
+export interface StandardPaymentChallengeResult {
+  headers: Record<string, string>;
+  responseBody: Record<string, any>;
+  standardPayload: Record<string, any>;
+}
+
+/**
+ * Creates standard x402 V2 challenge with official CDP/PayAI Bazaar extensions and legacy backward compatibility
+ */
+export function createStandardPaymentChallenge(config: PaymentChallengeConfig): StandardPaymentChallengeResult {
+  const units = config.amountUnits || Math.round(parseFloat(config.amountUsdc) * 1_000_000).toString();
+  const usdcContract = config.contractAddress || DEFAULT_USDC_BASE;
+  const chainId = Number(config.chainId || 8453);
+  const networkCaip2 = `eip155:${chainId}`;
+
+  const inputProps = config.inputProperties || { url: { type: 'string', format: 'uri' } };
+  const inputReq = config.inputRequired || ['url'];
+  const inputBodyVal = config.inputBody || { url: 'https://example.com' };
+
+  const v2StandardPayload: Record<string, any> = {
+    x402Version: 2,
+    error: 'PAYMENT-SIGNATURE header is required',
+    resource: {
+      url: config.resourceUrl || 'https://x402-scraper-engine.gejoe-tt.workers.dev/v1/scrape',
+      description: config.resourceDescription || 'Autonomous HTTP 402 Web Scraper & Intelligence for AI Agents on Base L2',
+      mimeType: 'application/json',
+      serviceName: config.serviceName || 'x402 Scraper Engine',
+      tags: config.tags || ['scraper', 'markdown', 'llama3', 'web3', 'base', 'usdc'],
+      iconUrl: 'https://getguruautomations.com/favicon.ico'
+    },
+    accepts: [
+      {
+        scheme: 'exact',
+        network: networkCaip2,
+        asset: usdcContract,
+        currency: usdcContract,
+        amount: units,
+        maxAmountRequired: units,
+        payTo: config.recipient,
+        recipient: config.recipient,
+        maxTimeoutSeconds: Number(config.windowSeconds || 3600),
+        extra: {
+          credentialTypes: ['authorization'],
+          name: 'USD Coin',
+          version: '2'
+        }
+      }
+    ],
+    extensions: {
+      bazaar: {
+        info: {
+          input: {
+            type: 'http',
+            method: 'POST',
+            bodyType: 'json',
+            body: inputBodyVal
+          },
+          output: {
+            type: 'json',
+            example: config.outputExample || {
+              success: true,
+              data: {}
+            }
+          }
+        },
+        schema: {
+          $schema: 'https://json-schema.org/draft/2020-12/schema',
+          properties: {
+            input: {
+              type: 'object',
+              required: ['type', 'method', 'bodyType', 'body'],
+              properties: {
+                type: { const: 'http', type: 'string' },
+                method: { enum: ['POST'], type: 'string' },
+                bodyType: { enum: ['json'], type: 'string' },
+                body: {
+                  type: 'object',
+                  required: inputReq,
+                  properties: inputProps
+                }
+              }
+            },
+            output: {
+              type: 'object',
+              required: ['type'],
+              properties: {
+                type: { type: 'string' }
+              }
+            }
+          },
+          required: ['input']
+        }
+      }
+    },
+    // Backward compatibility fields for legacy clients
     x402_version: '2.0',
     network: config.network || 'base',
-    chain_id: Number(config.chainId || 8453),
+    chain_id: chainId,
     asset: 'USDC',
-    contract_address: config.contractAddress || DEFAULT_USDC_BASE,
+    contract_address: usdcContract,
     amount_usdc: config.amountUsdc,
     recipient: config.recipient,
     max_receipt_age_seconds: Number(config.windowSeconds || 900)
   };
 
-  const jsonStr = JSON.stringify(v2Payload);
+  const jsonStr = JSON.stringify(v2StandardPayload);
   const base64V2 = typeof btoa === 'function' ? btoa(jsonStr) : Buffer.from(jsonStr).toString('base64');
 
-  return {
+  const headers: Record<string, string> = {
     'PAYMENT-REQUIRED': base64V2,
     'X-Payment-Version': '2',
     'X-Payment-Network': config.network || 'base',
-    'X-Payment-Chain-Id': String(config.chainId || 8453),
+    'X-Payment-Chain-Id': String(chainId),
     'X-Payment-Asset': 'USDC',
-    'X-Payment-Asset-Address': config.contractAddress || DEFAULT_USDC_BASE,
+    'X-Payment-Asset-Address': usdcContract,
     'X-Payment-Amount': config.amountUsdc,
     'X-Payment-To': config.recipient,
     'X-Payment-Window': String(config.windowSeconds || 900)
   };
+
+  const responseBody = {
+    ...v2StandardPayload,
+    error: 'Payment Required',
+    protocol: 'x402',
+    spec_version: '2.0',
+    message: `This endpoint requires an on-chain microtransaction of ${config.amountUsdc} USDC on Base. Free grace calls exhausted.`,
+    payment: {
+      version: 2,
+      network: config.network || 'base',
+      chain_id: chainId,
+      asset: 'USDC',
+      contractAddress: usdcContract,
+      amount: config.amountUsdc,
+      amount_usdc: config.amountUsdc,
+      amount_units: units,
+      recipient: config.recipient,
+      windowSeconds: Number(config.windowSeconds || 900),
+      instruction: `Transfer ${config.amountUsdc} USDC to ${config.recipient} on Base (Chain ID 8453), then resubmit with header 'X-Payment-Receipt: <tx_hash>' or 'PAYMENT-SIGNATURE: <base64>'`
+    }
+  };
+
+  return { headers, responseBody, standardPayload: v2StandardPayload };
+}
+
+/**
+ * Formats standard x402 V2 and backward-compatible payment headers
+ */
+export function createPaymentChallengeHeaders(config: PaymentChallengeConfig): Record<string, string> {
+  return createStandardPaymentChallenge(config).headers;
 }
 
 /**
