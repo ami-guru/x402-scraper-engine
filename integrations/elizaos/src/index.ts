@@ -10,9 +10,11 @@
 export interface ActionParameter {
   name: string;
   description: string;
-  type?: string;
   required?: boolean;
-  schema?: Record<string, unknown>;
+  schema: {
+    type: string;
+    [key: string]: unknown;
+  };
 }
 
 export interface ActionExample {
@@ -62,14 +64,14 @@ export const x402ScraperAction: Action = {
     {
       name: "url",
       description: "The public HTTP or HTTPS URL to scrape and convert to Markdown",
-      type: "string",
-      required: true
+      required: true,
+      schema: { type: "string" }
     },
     {
       name: "receipt",
       description: "Optional on-chain USDC payment transaction hash on Base L2 (Chain ID: 8453)",
-      type: "string",
-      required: false
+      required: false,
+      schema: { type: "string" }
     }
   ],
   validate: async (_runtime: any, message: any) => {
@@ -111,7 +113,7 @@ export const x402ScraperAction: Action = {
     const workerUrl = (params.workerUrl || options?.workerUrl || runtime?.getSetting?.("X402_WORKER_URL") || DEFAULT_WORKER_URL).replace(/\/$/, "");
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "User-Agent": "elizaos-plugin-x402-scraper/1.4.3"
+      "User-Agent": "elizaos-plugin-x402-scraper/1.4.4"
     };
 
     if (receipt) {

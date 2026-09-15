@@ -74,22 +74,40 @@ async function runTests() {
     // Test 1: ActionParameter[] Schema & Consumer Iteration
     // -------------------------------------------------------------
     total++;
-    console.log("1. Testing ActionParameter[] Schema & Consumer Iteration...");
+    console.log("1. Testing ActionParameter[] Schema & actionParametersToJsonSchema Compilation...");
     const isArray = Array.isArray(x402ScraperAction.parameters);
     
-    // Test ElizaOS core consumer contracts:
-    // a) for..of loop in actionParametersToJsonSchema
-    let iteratedParams = [];
-    for (const param of (x402ScraperAction.parameters || [])) {
-      iteratedParams.push(param.name);
+    // Core actionParametersToJsonSchema contract
+    function actionParametersToJsonSchema(parameters = [], options = {}) {
+      const properties = {};
+      const required = [];
+      for (const parameter of parameters) {
+        if (!parameter.schema) {
+          throw new TypeError("Cannot read properties of undefined (reading 'description')");
+        }
+        properties[parameter.name] = {
+          type: parameter.schema.type || "string",
+          description: parameter.description || parameter.name
+        };
+        if (parameter.required) {
+          required.push(parameter.name);
+        }
+      }
+      return {
+        type: "object",
+        properties,
+        required,
+        additionalProperties: options.allowAdditionalProperties ?? false
+      };
     }
-    
-    // b) .some() in context assembly
+
+    const compiledSchema = actionParametersToJsonSchema(x402ScraperAction.parameters);
     const hasRequired = x402ScraperAction.parameters?.some(p => p.required === true);
 
-    if (isArray && iteratedParams.includes('url') && iteratedParams.includes('receipt') && hasRequired) {
-      console.log("   ✅ Action.parameters is ActionParameter[] array.");
-      console.log("   ✅ Iterable by core actionParametersToJsonSchema (found params: " + iteratedParams.join(', ') + ").");
+    if (isArray && compiledSchema.properties.url && compiledSchema.properties.receipt && hasRequired) {
+      console.log("   ✅ Action.parameters is ActionParameter[] array with schema: { type: 'string' }.");
+      console.log("   ✅ actionParametersToJsonSchema compiled successfully without errors:");
+      console.log("      " + JSON.stringify(compiledSchema));
       console.log("   ✅ .some() contract passed for context assembly.");
       passed++;
     } else {

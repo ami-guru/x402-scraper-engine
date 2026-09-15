@@ -9,9 +9,11 @@
 export interface ActionParameter {
     name: string;
     description: string;
-    type?: string;
     required?: boolean;
-    schema?: Record<string, unknown>;
+    schema: {
+        type: string;
+        [key: string]: unknown;
+    };
 }
 export interface ActionExample {
     user: string;
