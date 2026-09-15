@@ -1,10 +1,38 @@
+/**
+ * elizaos-plugin-x402-scraper
+ * Autonomous HTTP 402 Web Scraper and Markdown Extraction Plugin for ElizaOS agents on Base L2.
+ * Supports dual-rail micropayments (EIP-712 signature & direct on-chain receipt) with a 2-call free trial grace tier.
+ *
+ * @author ASOT Marketing and Investment <ops@getguruautomations.com>
+ * @license MIT
+ */
+export interface ActionParameters {
+    type: string;
+    properties: Record<string, {
+        type: string;
+        description: string;
+        format?: string;
+    }>;
+    required: string[];
+}
+export interface ActionExample {
+    user: string;
+    content: {
+        text: string;
+        action?: string;
+        url?: string;
+        receipt?: string;
+        [key: string]: unknown;
+    };
+}
 export interface Action {
     name: string;
     similes: string[];
     description: string;
-    validate: (runtime: any, message: any) => Promise<boolean>;
-    handler: (runtime: any, message: any, state?: any, options?: any, callback?: any) => Promise<boolean>;
-    examples: any[][];
+    parameters?: ActionParameters;
+    validate: (runtime: any, message: any, state?: any) => Promise<boolean>;
+    handler: (runtime: any, message: any, state?: any, options?: Record<string, any>, callback?: (response: any) => Promise<any> | any) => Promise<any>;
+    examples: ActionExample[][];
 }
 export interface Plugin {
     name: string;
