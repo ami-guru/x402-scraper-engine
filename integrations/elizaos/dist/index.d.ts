@@ -6,14 +6,12 @@
  * @author ASOT Marketing and Investment <ops@getguruautomations.com>
  * @license MIT
  */
-export interface ActionParameters {
-    type: string;
-    properties: Record<string, {
-        type: string;
-        description: string;
-        format?: string;
-    }>;
-    required: string[];
+export interface ActionParameter {
+    name: string;
+    description: string;
+    type?: string;
+    required?: boolean;
+    schema?: Record<string, unknown>;
 }
 export interface ActionExample {
     user: string;
@@ -29,7 +27,7 @@ export interface Action {
     name: string;
     similes: string[];
     description: string;
-    parameters?: ActionParameters;
+    parameters?: ActionParameter[];
     validate: (runtime: any, message: any, state?: any) => Promise<boolean>;
     handler: (runtime: any, message: any, state?: any, options?: Record<string, any>, callback?: (response: any) => Promise<any> | any) => Promise<any>;
     examples: ActionExample[][];

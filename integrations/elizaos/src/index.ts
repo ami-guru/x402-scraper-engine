@@ -7,14 +7,12 @@
  * @license MIT
  */
 
-export interface ActionParameters {
-  type: string;
-  properties: Record<string, {
-    type: string;
-    description: string;
-    format?: string;
-  }>;
-  required: string[];
+export interface ActionParameter {
+  name: string;
+  description: string;
+  type?: string;
+  required?: boolean;
+  schema?: Record<string, unknown>;
 }
 
 export interface ActionExample {
@@ -32,7 +30,7 @@ export interface Action {
   name: string;
   similes: string[];
   description: string;
-  parameters?: ActionParameters;
+  parameters?: ActionParameter[];
   validate: (runtime: any, message: any, state?: any) => Promise<boolean>;
   handler: (
     runtime: any,
@@ -60,28 +58,30 @@ export const x402ScraperAction: Action = {
   name: "X402_SCRAPE",
   similes: ["SCRAPE_WEB", "EXTRACT_MARKDOWN", "READ_PAGE", "FETCH_URL", "X402_WEB_SCRAPE"],
   description: "Scrapes any public webpage and extracts clean, token-efficient Markdown for agent analysis. Features 2 free trial calls on Base L2, followed by autonomous HTTP 402 USDC micropayment verification.",
-  parameters: {
-    type: "object",
-    properties: {
-      url: {
-        type: "string",
-        description: "The public HTTP or HTTPS URL to scrape and convert to Markdown"
-      },
-      receipt: {
-        type: "string",
-        description: "Optional on-chain USDC payment transaction hash on Base L2 (Chain ID: 8453)"
-      }
+  parameters: [
+    {
+      name: "url",
+      description: "The public HTTP or HTTPS URL to scrape and convert to Markdown",
+      type: "string",
+      required: true
     },
-    required: ["url"]
-  },
+    {
+      name: "receipt",
+      description: "Optional on-chain USDC payment transaction hash on Base L2 (Chain ID: 8453)",
+      type: "string",
+      required: false
+    }
+  ],
   validate: async (_runtime: any, message: any) => {
     const text = message?.content?.text || "";
     const directUrl = message?.content?.url;
     return Boolean(directUrl || text.match(/https?:\/\/[^\s]+/));
   },
   handler: async (runtime: any, message: any, state?: any, options?: Record<string, any>, callback?: any) => {
-    // 1. Structured parameter extraction with fallbacks
+    // 1. Structured parameter extraction with fallbacks (planner options.parameters -> options -> message.content)
+    const params = options?.parameters || (typeof options === "object" && options !== null ? options : {});
     const targetUrl: string | undefined =
+      params.url ||
       options?.url ||
       message?.content?.url ||
       (message?.content?.text ? message.content.text.match(/https?:\/\/[^\s"'`<>]+/)?.[0] : undefined);
@@ -96,8 +96,10 @@ export const x402ScraperAction: Action = {
       return errResp;
     }
 
-    // 2. Receipt extraction from options, message content, state, or runtime settings
+    // 2. Receipt extraction from planner params, options, message content, state, or runtime settings
     let receipt: string | undefined =
+      params.receipt ||
+      params.txHash ||
       options?.receipt ||
       options?.txHash ||
       message?.content?.receipt ||
@@ -106,10 +108,10 @@ export const x402ScraperAction: Action = {
       state?.txHash ||
       (runtime?.getSetting ? runtime.getSetting("X402_PAYMENT_RECEIPT") : undefined);
 
-    const workerUrl = (options?.workerUrl || runtime?.getSetting?.("X402_WORKER_URL") || DEFAULT_WORKER_URL).replace(/\/$/, "");
+    const workerUrl = (params.workerUrl || options?.workerUrl || runtime?.getSetting?.("X402_WORKER_URL") || DEFAULT_WORKER_URL).replace(/\/$/, "");
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "User-Agent": "elizaos-plugin-x402-scraper/1.4.2"
+      "User-Agent": "elizaos-plugin-x402-scraper/1.4.3"
     };
 
     if (receipt) {
@@ -173,8 +175,11 @@ export const x402ScraperAction: Action = {
         const recipient = accepts?.payTo || DEFAULT_TREASURY;
         const assetContract = accepts?.asset || USDC_BASE_CONTRACT;
 
-        // Autonomous Payment Attempt: Check for runtime wallet provider
-        const walletProvider = options?.walletProvider || (runtime?.getProvider ? runtime.getProvider("wallet") : null);
+        // Autonomous Payment Attempt: Check for runtime wallet provider or service
+        const walletProvider =
+          options?.walletProvider ||
+          (runtime?.getService ? runtime.getService("wallet") : null) ||
+          (runtime?.getProvider ? runtime.getProvider("wallet") : null);
 
         // Rail A: EIP-712 TransferWithAuthorization
         if (walletProvider && typeof walletProvider.signTypedData === "function" && typeof walletProvider.getAddress === "function") {
