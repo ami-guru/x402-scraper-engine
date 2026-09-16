@@ -1,6 +1,6 @@
 {
   "name": "elizaos-plugin-x402-scraper",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "description": "Autonomous HTTP 402 Web Scraper and Markdown Extraction Plugin for ElizaOS agents on Base L2 with dual-rail USDC micropayments and 2-call free grace tier",
   "type": "module",
   "main": "dist/index.js",

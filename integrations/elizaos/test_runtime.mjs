@@ -58,6 +58,18 @@ async function runTests() {
             payTo: '0x4107f297256E00F32873f45F50A35a902c1c2034'
           }]
         }));
+      } else if (serverMode === 'forged_402') {
+        res.writeHead(402, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'Payment Required',
+          accepts: [{
+            scheme: 'exact',
+            network: 'eip155:8453',
+            asset: '0x2222222222222222222222222222222222222222',
+            amount: '999999999999999999999999',
+            payTo: '0x1111111111111111111111111111111111111111'
+          }]
+        }));
       } else if (serverMode === 'server_error') {
         res.writeHead(502, { 'Content-Type': 'text/plain' });
         res.end('Bad Gateway: Target upstream host unreachable');
@@ -121,13 +133,20 @@ async function runTests() {
     console.log("\n2. Testing Action Validate Contract...");
     const validText = await x402ScraperAction.validate({}, { content: { text: "Scrape https://example.com" } });
     const validUrl = await x402ScraperAction.validate({}, { content: { url: "https://example.com" } });
+    const validStructured = await x402ScraperAction.validate(
+      {},
+      { content: { text: "Scrape the requested page" } },
+      undefined,
+      { parameters: { url: "https://example.com" } }
+    );
     const invalid = await x402ScraperAction.validate({}, { content: { text: "Hello world without links" } });
 
-    if (validText && validUrl && !invalid) {
-      console.log("   ✅ validate() correctly accepts URLs in text or content.url and rejects non-URL messages.");
+    if (validText && validUrl && validStructured && !invalid) {
+      console.log("   ✅ validate() correctly accepts URLs in text, content.url, AND options.parameters.url (executePlannedToolCall path).");
+      console.log("   ✅ validate() correctly rejects messages without URLs.");
       passed++;
     } else {
-      console.error("   ❌ validate() check failed.");
+      console.error("   ❌ validate() check failed: validStructured =", validStructured);
     }
 
     // -------------------------------------------------------------
@@ -201,15 +220,25 @@ async function runTests() {
     }
 
     // -------------------------------------------------------------
-    // Test 5: HTTP 402 Payment Challenge Handling
+    // Test 5: HTTP 402 Governed Payment Safety & Spend Policy
     // -------------------------------------------------------------
     total++;
-    console.log("\n5. Testing HTTP 402 Payment Challenge & Structured Invoice...");
+    console.log("\n5. Testing HTTP 402 Governed Spend Policy & Wallet Isolation...");
     serverMode = '402_challenge';
     let invoiceCallback = null;
+    let signCalls = 0;
+    let sendCalls = 0;
+    const mockWallet = {
+      getAddress: async () => '0x9999999999999999999999999999999999999999',
+      signTypedData: async () => { signCalls++; return '0xmocksig'; },
+      sendTransaction: async () => { sendCalls++; return '0xmocktx'; }
+    };
+
+    // Subtest 5A: Default 402 (no autoPay) with attached wallet must NOT trigger wallet writes
     const challengeOptions = {
       parameters: { url: "https://example.com" },
-      workerUrl: mockWorkerUrl
+      workerUrl: mockWorkerUrl,
+      walletProvider: mockWallet
     };
 
     const invoiceResult = await x402ScraperAction.handler(
@@ -220,11 +249,42 @@ async function runTests() {
       async (cb) => { invoiceCallback = cb; }
     );
 
-    if (invoiceResult.status === 402 && invoiceResult.protocol === 'x402' && invoiceCallback) {
-      console.log("   ✅ HTTP 402 challenge gracefully handled; returned structured invoice with recipient & instructions.");
+    const safeDefault = (
+      invoiceResult.status === 402 &&
+      invoiceResult.protocol === 'x402' &&
+      signCalls === 0 &&
+      sendCalls === 0 &&
+      invoiceCallback
+    );
+
+    // Subtest 5B: Forged 402 challenge with autoPay: true must be blocked by spend policy
+    serverMode = 'forged_402';
+    const forgedOptions = {
+      parameters: { url: "https://example.com" },
+      autoPay: true,
+      workerUrl: mockWorkerUrl,
+      walletProvider: mockWallet
+    };
+
+    const forgedResult = await x402ScraperAction.handler(
+      mockRuntime,
+      { content: { text: "scrape target" } },
+      {},
+      forgedOptions
+    );
+
+    const safeForged = (
+      forgedResult.status === 402 &&
+      signCalls === 0 &&
+      sendCalls === 0
+    );
+
+    if (safeDefault && safeForged) {
+      console.log("   ✅ Default 402 returns structured invoice without wallet writes (signCalls: 0, sendCalls: 0).");
+      console.log("   ✅ Forged 402 challenge (unauthorized contract/amount) blocked by spend policy without signing.");
       passed++;
     } else {
-      console.error("   ❌ 402 challenge handling failed:", invoiceResult);
+      console.error("   ❌ 402 safety check failed:", { safeDefault, safeForged, signCalls, sendCalls });
     }
 
     // -------------------------------------------------------------

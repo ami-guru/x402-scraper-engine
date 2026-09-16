@@ -30,7 +30,7 @@ export interface Action {
     similes: string[];
     description: string;
     parameters?: ActionParameter[];
-    validate: (runtime: any, message: any, state?: any) => Promise<boolean>;
+    validate: (runtime: any, message: any, state?: any, options?: Record<string, any>) => Promise<boolean>;
     handler: (runtime: any, message: any, state?: any, options?: Record<string, any>, callback?: (response: any) => Promise<any> | any) => Promise<any>;
     examples: ActionExample[][];
 }

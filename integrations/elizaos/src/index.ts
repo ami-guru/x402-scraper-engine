@@ -33,7 +33,7 @@ export interface Action {
   similes: string[];
   description: string;
   parameters?: ActionParameter[];
-  validate: (runtime: any, message: any, state?: any) => Promise<boolean>;
+  validate: (runtime: any, message: any, state?: any, options?: Record<string, any>) => Promise<boolean>;
   handler: (
     runtime: any,
     message: any,
@@ -55,6 +55,7 @@ export interface Plugin {
 const DEFAULT_WORKER_URL = "https://x402-scraper-engine.gejoe-tt.workers.dev";
 const DEFAULT_TREASURY = "0x4107f297256E00F32873f45F50A35a902c1c2034";
 const USDC_BASE_CONTRACT = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+const MAX_ALLOWABLE_SPEND_UNITS = 50000n; // 0.05 USDC safety ceiling
 
 export const x402ScraperAction: Action = {
   name: "X402_SCRAPE",
@@ -74,10 +75,12 @@ export const x402ScraperAction: Action = {
       schema: { type: "string" }
     }
   ],
-  validate: async (_runtime: any, message: any) => {
-    const text = message?.content?.text || "";
+  validate: async (_runtime: any, message: any, _state?: any, options?: Record<string, any>) => {
+    const params = options?.parameters || (typeof options === "object" && options !== null ? options : {});
+    const structuredUrl = params.url || options?.url;
     const directUrl = message?.content?.url;
-    return Boolean(directUrl || text.match(/https?:\/\/[^\s]+/));
+    const text = message?.content?.text || "";
+    return Boolean(structuredUrl || directUrl || text.match(/https?:\/\/[^\s]+/));
   },
   handler: async (runtime: any, message: any, state?: any, options?: Record<string, any>, callback?: any) => {
     // 1. Structured parameter extraction with fallbacks (planner options.parameters -> options -> message.content)
@@ -173,157 +176,179 @@ export const x402ScraperAction: Action = {
         }
 
         const accepts = paymentRequirements?.accepts?.[0];
-        const amountUnits = accepts?.amount || "5000";
+        const rawAmount = accepts?.amount || "5000";
         const recipient = accepts?.payTo || DEFAULT_TREASURY;
         const assetContract = accepts?.asset || USDC_BASE_CONTRACT;
 
-        // Autonomous Payment Attempt: Check for runtime wallet provider or service
-        const walletProvider =
-          options?.walletProvider ||
-          (runtime?.getService ? runtime.getService("wallet") : null) ||
-          (runtime?.getProvider ? runtime.getProvider("wallet") : null);
+        // Security Validation & Spend Policy Governance
+        let amountUnits: bigint;
+        try {
+          amountUnits = BigInt(rawAmount);
+        } catch {
+          amountUnits = 5000n;
+        }
 
-        // Rail A: EIP-712 TransferWithAuthorization
-        if (walletProvider && typeof walletProvider.signTypedData === "function" && typeof walletProvider.getAddress === "function") {
-          try {
-            const fromAddress = await walletProvider.getAddress();
-            const now = Math.floor(Date.now() / 1000);
-            const nonceBytes = new Uint8Array(32);
-            if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-              crypto.getRandomValues(nonceBytes);
-            } else {
-              for (let i = 0; i < 32; i++) nonceBytes[i] = Math.floor(Math.random() * 256);
-            }
-            const nonce = "0x" + Array.from(nonceBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+        // Governed spend policy: Autonomous on-chain settlement requires explicit opt-in
+        const isAutoPayEnabled = Boolean(options?.autoPay === true || options?.parameters?.autoPay === true);
 
-            const signature = await walletProvider.signTypedData({
-              domain: {
-                name: "USD Coin",
-                version: "2",
-                chainId: 8453,
-                verifyingContract: assetContract
-              },
-              types: {
-                TransferWithAuthorization: [
-                  { name: "from", type: "address" },
-                  { name: "to", type: "address" },
-                  { name: "value", type: "uint256" },
-                  { name: "validAfter", type: "uint256" },
-                  { name: "validBefore", type: "uint256" },
-                  { name: "nonce", type: "bytes32" }
-                ]
-              },
-              primaryType: "TransferWithAuthorization",
-              message: {
-                from: fromAddress,
-                to: recipient,
-                value: BigInt(amountUnits),
-                validAfter: BigInt(now - 60),
-                validBefore: BigInt(now + 3600),
-                nonce
+        // Enforce strict economic safety constraints:
+        // 1. Asset must strictly match canonical Base USDC contract
+        const isCanonicalAsset = assetContract.toLowerCase() === USDC_BASE_CONTRACT.toLowerCase();
+        // 2. Recipient must match configured treasury
+        const isExpectedRecipient = recipient.toLowerCase() === DEFAULT_TREASURY.toLowerCase();
+        // 3. Amount must be positive and bounded by the safety ceiling (0.05 USDC)
+        const isAmountPermitted = amountUnits > 0n && amountUnits <= MAX_ALLOWABLE_SPEND_UNITS;
+
+        const isPaymentPermitted = isAutoPayEnabled && isCanonicalAsset && isExpectedRecipient && isAmountPermitted;
+
+        // Autonomous Payment Attempt (only when explicitly permitted by spend policy)
+        if (isPaymentPermitted) {
+          const walletProvider =
+            options?.walletProvider ||
+            (runtime?.getService ? runtime.getService("wallet") : null);
+
+          // Rail A: EIP-712 TransferWithAuthorization
+          if (walletProvider && typeof walletProvider.signTypedData === "function" && typeof walletProvider.getAddress === "function") {
+            try {
+              const fromAddress = await walletProvider.getAddress();
+              const now = Math.floor(Date.now() / 1000);
+              const nonceBytes = new Uint8Array(32);
+              if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+                crypto.getRandomValues(nonceBytes);
+              } else {
+                for (let i = 0; i < 32; i++) nonceBytes[i] = Math.floor(Math.random() * 256);
               }
-            });
+              const nonce = "0x" + Array.from(nonceBytes).map(b => b.toString(16).padStart(2, "0")).join("");
 
-            const paymentPayload = {
-              x402Version: 2,
-              scheme: "exact",
-              network: "eip155:8453",
-              accepted: accepts,
-              payload: {
-                signature,
-                authorization: {
+              const signature = await walletProvider.signTypedData({
+                domain: {
+                  name: "USD Coin",
+                  version: "2",
+                  chainId: 8453,
+                  verifyingContract: assetContract
+                },
+                types: {
+                  TransferWithAuthorization: [
+                    { name: "from", type: "address" },
+                    { name: "to", type: "address" },
+                    { name: "value", type: "uint256" },
+                    { name: "validAfter", type: "uint256" },
+                    { name: "validBefore", type: "uint256" },
+                    { name: "nonce", type: "bytes32" }
+                  ]
+                },
+                primaryType: "TransferWithAuthorization",
+                message: {
                   from: fromAddress,
                   to: recipient,
                   value: amountUnits,
-                  validAfter: (now - 60).toString(),
-                  validBefore: (now + 3600).toString(),
+                  validAfter: BigInt(now - 60),
+                  validBefore: BigInt(now + 3600),
                   nonce
                 }
-              }
-            };
+              });
 
-            const b64 = typeof btoa === "function" ? btoa(JSON.stringify(paymentPayload)) : Buffer.from(JSON.stringify(paymentPayload)).toString("base64");
-            const retryRes = await fetch(`${workerUrl}/v1/scrape`, {
-              method: "POST",
-              headers: {
-                ...headers,
-                "PAYMENT-SIGNATURE": b64
-              },
-              body: JSON.stringify({ url: targetUrl })
-            });
-
-            if (retryRes.ok) {
-              const paidData = (await retryRes.json()) as any;
-              const paidResult = {
-                success: true,
-                url: targetUrl,
-                title: paidData.title || "Untitled Page",
-                markdown: paidData.markdown || "",
-                tokensEstimated: paidData.tokens_estimated || 0,
-                paid: true,
-                paymentScheme: "eip712"
+              const paymentPayload = {
+                x402Version: 2,
+                scheme: "exact",
+                network: "eip155:8453",
+                accepted: accepts,
+                payload: {
+                  signature,
+                  authorization: {
+                    from: fromAddress,
+                    to: recipient,
+                    value: amountUnits.toString(),
+                    validAfter: (now - 60).toString(),
+                    validBefore: (now + 3600).toString(),
+                    nonce
+                  }
+                }
               };
-              if (callback) {
-                await callback({
-                  text: `# ${paidResult.title}\n\n${paidResult.markdown}`,
-                  content: paidResult,
-                  action: "X402_SCRAPE"
-                });
+
+              const b64 = typeof btoa === "function" ? btoa(JSON.stringify(paymentPayload)) : Buffer.from(JSON.stringify(paymentPayload)).toString("base64");
+              const retryRes = await fetch(`${workerUrl}/v1/scrape`, {
+                method: "POST",
+                headers: {
+                  ...headers,
+                  "PAYMENT-SIGNATURE": b64
+                },
+                body: JSON.stringify({ url: targetUrl })
+              });
+
+              if (retryRes.ok) {
+                const paidData = (await retryRes.json()) as any;
+                const paidResult = {
+                  success: true,
+                  url: targetUrl,
+                  title: paidData.title || "Untitled Page",
+                  markdown: paidData.markdown || "",
+                  tokensEstimated: paidData.tokens_estimated || 0,
+                  paid: true,
+                  paymentScheme: "eip712"
+                };
+                if (callback) {
+                  await callback({
+                    text: `# ${paidResult.title}\n\n${paidResult.markdown}`,
+                    content: paidResult,
+                    action: "X402_SCRAPE"
+                  });
+                }
+                return paidResult;
               }
-              return paidResult;
+            } catch {
+              // Fall through to Rail B or structured 402 invoice
             }
-          } catch {
-            // Fall through to Rail B or structured 402 invoice
+          }
+
+          // Rail B: Direct ERC-20 transfer fallback
+          if (walletProvider && typeof walletProvider.sendTransaction === "function") {
+            try {
+              const hexAmount = amountUnits.toString(16).padStart(64, "0");
+              const cleanRecipient = recipient.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+              const transferData = `0xa9059cbb${cleanRecipient}${hexAmount}`;
+
+              const txHash = await walletProvider.sendTransaction({
+                to: assetContract,
+                data: transferData
+              });
+
+              const retryReceiptRes = await fetch(`${workerUrl}/v1/scrape`, {
+                method: "POST",
+                headers: {
+                  ...headers,
+                  "X-Payment-Receipt": txHash
+                },
+                body: JSON.stringify({ url: targetUrl })
+              });
+
+              if (retryReceiptRes.ok) {
+                const paidData = (await retryReceiptRes.json()) as any;
+                const paidResult = {
+                  success: true,
+                  url: targetUrl,
+                  title: paidData.title || "Untitled Page",
+                  markdown: paidData.markdown || "",
+                  tokensEstimated: paidData.tokens_estimated || 0,
+                  paid: true,
+                  txHash
+                };
+                if (callback) {
+                  await callback({
+                    text: `# ${paidResult.title}\n\n${paidResult.markdown}`,
+                    content: paidResult,
+                    action: "X402_SCRAPE"
+                  });
+                }
+                return paidResult;
+              }
+            } catch {
+              // Fall through to structured 402 return
+            }
           }
         }
 
-        // Rail B: Direct ERC-20 transfer fallback
-        if (walletProvider && typeof walletProvider.sendTransaction === "function") {
-          try {
-            const hexAmount = BigInt(amountUnits).toString(16).padStart(64, "0");
-            const cleanRecipient = recipient.toLowerCase().replace(/^0x/, "").padStart(64, "0");
-            const transferData = `0xa9059cbb${cleanRecipient}${hexAmount}`;
-
-            const txHash = await walletProvider.sendTransaction({
-              to: assetContract,
-              data: transferData
-            });
-
-            const retryReceiptRes = await fetch(`${workerUrl}/v1/scrape`, {
-              method: "POST",
-              headers: {
-                ...headers,
-                "X-Payment-Receipt": txHash
-              },
-              body: JSON.stringify({ url: targetUrl })
-            });
-
-            if (retryReceiptRes.ok) {
-              const paidData = (await retryReceiptRes.json()) as any;
-              const paidResult = {
-                success: true,
-                url: targetUrl,
-                title: paidData.title || "Untitled Page",
-                markdown: paidData.markdown || "",
-                tokensEstimated: paidData.tokens_estimated || 0,
-                paid: true,
-                txHash
-              };
-              if (callback) {
-                await callback({
-                  text: `# ${paidResult.title}\n\n${paidResult.markdown}`,
-                  content: paidResult,
-                  action: "X402_SCRAPE"
-                });
-              }
-              return paidResult;
-            }
-          } catch {
-            // Fall through to structured 402 return
-          }
-        }
-
-        // Structured 402 response when automated settlement is not configured
+        // Default & Governed Path: Structured HTTP 402 payment invoice (No unconfirmed wallet writes)
         const paymentInvoice = {
           success: false,
           status: 402,
@@ -332,17 +357,17 @@ export const x402ScraperAction: Action = {
           network: "base",
           chainId: 8453,
           asset: "USDC",
-          contractAddress: assetContract,
-          amountUnits,
+          contractAddress: USDC_BASE_CONTRACT,
+          amountUnits: amountUnits.toString(),
           amountUSDC: "0.005",
-          recipient,
-          message: "Free trial calls exhausted. Provide an on-chain Base USDC transaction hash in options.receipt or connect an EVM wallet provider.",
-          instructions: `Send 0.005 USDC on Base L2 to ${recipient} and resubmit with receipt: "<tx_hash>".`
+          recipient: DEFAULT_TREASURY,
+          message: "Free trial calls exhausted. Provide an on-chain Base USDC transaction hash in options.receipt or set options.autoPay: true with an authorized wallet provider.",
+          instructions: `Send 0.005 USDC on Base L2 to ${DEFAULT_TREASURY} and resubmit with receipt: "<tx_hash>".`
         };
 
         if (callback) {
           await callback({
-            text: `HTTP 402 Payment Required: Free trial exhausted. Please pay 0.005 USDC on Base to ${recipient} or provide an on-chain receipt hash.`,
+            text: `HTTP 402 Payment Required: Free trial exhausted. Please pay 0.005 USDC on Base to ${DEFAULT_TREASURY} or provide an on-chain receipt hash.`,
             content: paymentInvoice,
             action: "X402_SCRAPE"
           });
