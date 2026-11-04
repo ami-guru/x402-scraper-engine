@@ -1,3 +1,11 @@
+// Edge polyfills for PDF.js runtime in Cloudflare Workers
+if (typeof (globalThis as any).window === 'undefined') {
+  (globalThis as any).window = globalThis;
+}
+if (typeof (globalThis as any).location === 'undefined') {
+  (globalThis as any).location = { origin: 'http://localhost', href: 'http://localhost' };
+}
+
 import {
   Env,
   ScrapeRequest,
@@ -10,19 +18,43 @@ import {
   DigestResponse,
   AuditResponse,
   TwitterSearchResponse,
-  TwitterProfileResponse
+  TwitterProfileResponse,
+  ExtractRequest,
+  ExtractResponse,
+  TabDepositRequest,
+  TabDepositResponse,
+  CrawlRequest,
+  CrawlResponse,
+  PdfRequest,
+  PdfResponse
 } from './types';
-import { validateUrl, scrapeToMarkdown, searchAndScrapeToMarkdown } from './scraper';
-import { synthesizeDigest, auditSecuritySignal } from './digest';
+import { validateUrl, scrapeToMarkdown, searchAndScrapeToMarkdown, extractPdfToMarkdown, crawlSiteToMarkdown } from './scraper';
+import { synthesizeDigest, auditSecuritySignal, extractStructuredData } from './digest';
 import { searchTwitter, getTwitterProfile } from './twitter';
-import { verifyBasePayment, checkAndRecordReplay, createPaymentChallengeHeaders, createStandardPaymentChallenge, PaymentChallengeConfig } from './verifier';
+import {
+  verifyBasePayment,
+  checkAndRecordReplay,
+  createPaymentChallengeHeaders,
+  createStandardPaymentChallenge,
+  PaymentChallengeConfig,
+  verifyAndConsumeSessionCredit,
+  createOrTopUpSession
+} from './verifier';
+// Edge polyfills for PDF.js runtime in Cloudflare Workers
+if (typeof (globalThis as any).window === 'undefined') {
+  (globalThis as any).window = globalThis;
+}
+if (typeof (globalThis as any).location === 'undefined') {
+  (globalThis as any).location = { origin: 'http://localhost', href: 'http://localhost' };
+}
+
 import { pingPublicIndexers } from './discovery';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Payment-Receipt, X-Payment-Version, X-Payment-Network, PAYMENT-REQUIRED, Payment-Required, PAYMENT-SIGNATURE, payment-signature',
-  'Access-Control-Expose-Headers': 'PAYMENT-REQUIRED, Payment-Required, PAYMENT-RESPONSE, Payment-Response, X-Payment-Version, X-Payment-Network, X-Payment-Chain-Id, X-Payment-Asset, X-Payment-Asset-Address, X-Payment-Amount, X-Payment-To, X-Payment-Window, X-Grace-Calls-Remaining'
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Payment-Receipt, X-Payment-Version, X-Payment-Network, PAYMENT-REQUIRED, Payment-Required, PAYMENT-SIGNATURE, payment-signature, X-Session-Key, X-ASOT-Internal-Key',
+  'Access-Control-Expose-Headers': 'PAYMENT-REQUIRED, Payment-Required, PAYMENT-RESPONSE, Payment-Response, X-Payment-Version, X-Payment-Network, X-Payment-Chain-Id, X-Payment-Asset, X-Payment-Asset-Address, X-Payment-Amount, X-Payment-To, X-Payment-Window, X-Grace-Calls-Remaining, X-Session-Key, X-Session-Credits-Remaining, X-Bypass-Tier'
 };
 
 async function settleFacilitatorPayment(
@@ -94,6 +126,13 @@ async function checkAndConsumeGraceTier(request: Request, env: Env): Promise<Gra
   }
 }
 
+function isInternalAuthorized(request: Request, env: Env): boolean {
+  const internalKey = request.headers.get('X-ASOT-Internal-Key') || request.headers.get('x-asot-internal-key');
+  const configured = env.ASOT_INTERNAL_KEY?.trim();
+  if (!configured) return false;
+  return internalKey?.trim() === configured;
+}
+
 interface SystemStats {
   total_calls: number;
   free_grace_calls: number;
@@ -106,13 +145,16 @@ interface SystemStats {
     search: number;
     twitter_search: number;
     twitter_profile: number;
+    extract?: number;
+    crawl?: number;
+    pdf?: number;
   };
   last_call_at: string | null;
 }
 
 async function recordUsageMetric(
   env: Env,
-  endpoint: 'scrape' | 'digest' | 'audit' | 'search' | 'twitter_search' | 'twitter_profile',
+  endpoint: 'scrape' | 'digest' | 'audit' | 'search' | 'twitter_search' | 'twitter_profile' | 'extract' | 'crawl' | 'pdf',
   isPaid: boolean,
   usdcAmount: number
 ): Promise<void> {
@@ -132,7 +174,8 @@ async function recordUsageMetric(
             audit: 0,
             search: 0,
             twitter_search: 0,
-            twitter_profile: 0
+            twitter_profile: 0,
+            extract: 0
           },
           last_call_at: null
         };
@@ -344,6 +387,128 @@ function getOpenApiSpec(origin: string, env: Env) {
           }
         }
       },
+      '/read/{url}': {
+        get: {
+          summary: '1-Tap Proxy Prefix Scrape (0.005 USDC / 2-call grace tier)',
+          description: 'Instant zero-JSON terminal and browser scraping. Returns raw Markdown directly in response body.',
+          operationId: 'readUrlPrefix',
+          parameters: [
+            { name: 'url', in: 'path', required: true, description: 'Target URL to scrape', schema: { type: 'string' } },
+            { name: 'X-Payment-Receipt', in: 'header', required: false, schema: { type: 'string' } },
+            { name: 'X-Session-Key', in: 'header', required: false, schema: { type: 'string' } }
+          ],
+          responses: {
+            '200': { description: 'Clean Markdown' },
+            '402': { description: 'Payment Required' }
+          }
+        }
+      },
+      '/v1/extract': {
+        post: {
+          summary: 'Schema-Driven Structured JSON Extraction (0.030 USDC)',
+          description: 'Extracts structured JSON adhering strictly to a user schema using Edge Llama-3.',
+          operationId: 'extractStructuredJson',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    url: { type: 'string', format: 'uri' },
+                    schema: { type: 'object', description: 'Target JSON schema specification' },
+                    prompt: { type: 'string', description: 'Optional natural language extraction prompt' }
+                  },
+                  required: ['url']
+                }
+              }
+            }
+          },
+          responses: {
+            '200': { description: 'Validated Structured JSON' },
+            '402': { description: 'Payment Required' }
+          }
+        }
+      },
+      '/v1/tab/deposit': {
+        post: {
+          summary: 'Open or Top Up Agent Session Tab on Base L2',
+          description: 'Pre-funds high-speed session tab with USDC on Base (min 0.10 USDC = 20 scrapes) for 0ms blockchain queuing.',
+          operationId: 'depositSessionTab',
+          parameters: [
+            { name: 'X-Payment-Receipt', in: 'header', required: true, description: 'Base L2 tx hash transferring >= 0.10 USDC' }
+          ],
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    session_key: { type: 'string', description: 'Optional custom session key' }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            '200': { description: 'Session Tab Funded' },
+            '402': { description: 'Payment Required' }
+          }
+        }
+      },
+      '/v1/crawl': {
+        post: {
+          summary: 'Recursive Documentation & Sitemap Crawl (0.250 USDC)',
+          description: 'Recursively crawls an entire documentation site up to 25 pages, returning unified Markdown knowledge base with Table of Contents.',
+          operationId: 'crawlSite',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    url: { type: 'string', format: 'uri', example: 'https://docs.arbitrum.io' },
+                    limit: { type: 'integer', example: 15 },
+                    max_depth: { type: 'integer', example: 2 }
+                  },
+                  required: ['url']
+                }
+              }
+            }
+          },
+          responses: {
+            '200': { description: 'Crawled Knowledge Base' },
+            '402': { description: 'Payment Required' }
+          }
+        }
+      },
+      '/v1/pdf': {
+        post: {
+          summary: 'Native Whitepaper & PDF Text Stream to Markdown (0.050 USDC)',
+          description: 'Parses academic papers and financial PDFs directly into token-efficient Markdown.',
+          operationId: 'extractPdf',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    url: { type: 'string', format: 'uri', example: 'https://bitcoin.org/bitcoin.pdf' }
+                  },
+                  required: ['url']
+                }
+              }
+            }
+          },
+          responses: {
+            '200': { description: 'Parsed Markdown Document' },
+            '402': { description: 'Payment Required' }
+          }
+        }
+      },
       '/health': {
         get: {
           summary: 'Health and protocol info',
@@ -439,6 +604,9 @@ export default {
           },
           pricing: {
             scrape_usdc: env.SCRAPE_PRICE_USDC || env.PRICE_USDC || '0.005',
+            crawl_usdc: env.CRAWL_PRICE_USDC || '0.250',
+            pdf_usdc: env.PDF_PRICE_USDC || '0.050',
+            extract_usdc: env.EXTRACT_PRICE_USDC || '0.030',
             digest_usdc: env.DIGEST_PRICE_USDC || '0.025',
             audit_usdc: env.AUDIT_PRICE_USDC || '0.080',
             search_usdc: env.SEARCH_PRICE_USDC || '0.050',
@@ -475,7 +643,11 @@ The x402 Scraper Engine enables autonomous AI agents to scrape webpages, synthes
 Every new client agent receives 2 free trial calls across any endpoint before requiring on-chain micro-settlement. Simply call any POST endpoint without an X-Payment-Receipt header to test.
 
 ## Tools & Endpoints
+- GET /read/*: 1-Tap proxy read returning clean Markdown (0.005 USDC).
 - POST /v1/scrape: Clean, token-efficient HTML-to-Markdown extraction (0.005 USDC).
+- POST /v1/crawl: Recursive multi-page documentation & sitemap crawling (0.250 USDC).
+- POST /v1/pdf: Whitepaper & academic PDF stream extraction (0.050 USDC).
+- POST /v1/extract: Schema-driven structured JSON extraction via Edge Llama-3 (0.030 USDC).
 - POST /v1/digest: Llama-3 Edge LLM context extraction & entity summary (0.025 USDC).
 - POST /v1/audit: Security, phishing, and credibility analysis (0.080 USDC).
 - POST /v1/search: Multi-source web search and Markdown scrape (0.050 USDC).
@@ -534,7 +706,7 @@ npx -y github:ami-guru/x402-scraper-engine
           provider: {
             name: 'ASOT Marketing and Investment',
             url: 'https://getguruautomations.com',
-            support: 'ops@getguruautomations.com'
+            support: 'gerard@getguruautomations.com'
           },
           free_grace_calls: 2,
           payment: {
@@ -554,6 +726,24 @@ npx -y github:ami-guru/x402-scraper-engine
               amount_units: '5000',
               description: 'Zero-bloat HTML to Markdown extraction for token-efficient LLM context (2-call free grace tier available).',
               tags: ['scraping', 'markdown', 'web']
+            },
+            {
+              path: '/v1/crawl',
+              method: 'POST',
+              name: 'crawl_documentation_tree',
+              pricing: '0.250 USDC',
+              amount_units: '250000',
+              description: 'Recursive multi-page documentation and sitemap crawling (up to 25 pages) packaged into unified Markdown with Table of Contents.',
+              tags: ['crawler', 'sitemap', 'documentation', 'knowledge-base']
+            },
+            {
+              path: '/v1/pdf',
+              method: 'POST',
+              name: 'extract_pdf_markdown',
+              pricing: '0.050 USDC',
+              amount_units: '50000',
+              description: 'Native whitepaper and academic PDF text stream parser converting documents directly to clean Markdown.',
+              tags: ['pdf', 'whitepaper', 'academic', 'research']
             },
             {
               path: '/v1/digest',
@@ -601,6 +791,135 @@ npx -y github:ami-guru/x402-scraper-engine
               tags: ['twitter', 'profile', 'social']
             }
           ]
+        });
+      }
+    }
+
+    // 2.5 GET /read/* 1-Tap Proxy Prefix Route (Jina-style, 0.005 USDC / 2-call grace tier)
+    if (request.method === 'GET' && url.pathname.startsWith('/read/')) {
+      const rawTargetUrl = url.pathname.slice(6) + (url.search ? url.search : '');
+      let targetUrl = rawTargetUrl.trim();
+      if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+        targetUrl = 'https://' + targetUrl;
+      }
+
+      const urlCheck = validateUrl(targetUrl);
+      if (!urlCheck.valid) {
+        return new Response(`Error: Invalid or prohibited target URL: ${urlCheck.error}\n`, {
+          status: 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' }
+        });
+      }
+
+      const sessionKey = request.headers.get('X-Session-Key')?.trim();
+      const receiptHeader = request.headers.get('X-Payment-Receipt') || url.searchParams.get('receipt');
+      const isInternal = isInternalAuthorized(request, env);
+      let txHash = receiptHeader?.trim();
+
+      const amountUsdc = env.SCRAPE_PRICE_USDC || env.PRICE_USDC || '0.005';
+      const amountUnits = env.SCRAPE_PRICE_UNITS || '5000';
+      const challenge = createStandardPaymentChallenge({
+        amountUsdc,
+        amountUnits,
+        recipient: env.TREASURY_WALLET_ADDRESS,
+        network: env.NETWORK || 'base',
+        chainId: env.CHAIN_ID || 8453,
+        contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900,
+        resourceUrl: `${url.origin}/read/${targetUrl}`,
+        resourceDescription: '1-Tap Zero-bloat HTML to Markdown extraction on Base L2',
+        serviceName: 'x402 Scraper Engine',
+        tags: ['read', 'scraper', 'markdown', 'web3', 'base']
+      });
+
+      let isGraceCall = false;
+      let sessionUsed = false;
+      let sessionCreditsLeft = 0;
+
+      // 1. Session Key Priority
+      if (sessionKey && !isInternal) {
+        const sessionRes = await verifyAndConsumeSessionCredit(sessionKey, env, 1);
+        if (sessionRes.valid) {
+          sessionUsed = true;
+          sessionCreditsLeft = sessionRes.creditsRemaining || 0;
+        } else if (!txHash) {
+          return new Response(`Payment Required: ${sessionRes.error}\n\nFund your session via POST /v1/tab/deposit or settle on Base L2: 0.005 USDC to ${env.TREASURY_WALLET_ADDRESS}\n`, {
+            status: 402,
+            headers: {
+              ...CORS_HEADERS,
+              ...challenge.headers,
+              'Content-Type': 'text/plain; charset=utf-8'
+            }
+          });
+        }
+      }
+
+      // 2. Grace tier check if no session and no txHash
+      if (!sessionUsed && !txHash && !isInternal) {
+        const grace = await checkAndConsumeGraceTier(request, env);
+        if (grace.isGrace) {
+          isGraceCall = true;
+        } else {
+          return new Response(`Payment Required: 2 free grace calls exhausted.\nSettle 0.005 USDC on Base L2 to ${env.TREASURY_WALLET_ADDRESS} and resubmit with ?receipt=<txHash> or X-Payment-Receipt header.\n`, {
+            status: 402,
+            headers: {
+              ...CORS_HEADERS,
+              ...challenge.headers,
+              'Content-Type': 'text/plain; charset=utf-8'
+            }
+          });
+        }
+      }
+
+      // 3. On-chain receipt verification if txHash provided
+      if (!sessionUsed && !isGraceCall && !isInternal && txHash) {
+        const requiredUnits = BigInt(amountUnits);
+        const verification = await verifyBasePayment(txHash, env, requiredUnits);
+        if (!verification.valid) {
+          return new Response(`Payment Verification Failed: ${verification.error}\n`, {
+            status: 402,
+            headers: { ...CORS_HEADERS, ...challenge.headers, 'Content-Type': 'text/plain; charset=utf-8' }
+          });
+        }
+        const replayCheck = await checkAndRecordReplay(txHash, env, {
+          targetUrl,
+          action: 'read_prefix',
+          sender: verification.sender,
+          amountUnits: verification.amountUnits?.toString(),
+          timestamp: verification.timestamp
+        });
+        if (replayCheck.replayed) {
+          return new Response(`Error: Transaction already redeemed. Replay attacks are prohibited.\n`, {
+            status: 400,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' }
+          });
+        }
+      }
+
+      try {
+        const scrapeResult = await scrapeToMarkdown(targetUrl, env);
+        await recordUsageMetric(env, 'scrape', Boolean(sessionUsed || txHash), sessionUsed || txHash ? parseFloat(amountUsdc) : 0);
+
+        const responseHeaders: Record<string, string> = {
+          ...CORS_HEADERS,
+          'Content-Type': 'text/markdown; charset=utf-8',
+          'X-Scraped-Url': targetUrl,
+          'X-Estimated-Tokens': scrapeResult.tokensEstimated.toString(),
+          'X-Bypass-Tier': scrapeResult.bypassTier || 'stealth_direct'
+        };
+        if (sessionUsed) {
+          responseHeaders['X-Session-Key'] = sessionKey!;
+          responseHeaders['X-Session-Credits-Remaining'] = sessionCreditsLeft.toString();
+        }
+
+        return new Response(scrapeResult.markdown, {
+          status: 200,
+          headers: responseHeaders
+        });
+      } catch (err: any) {
+        return new Response(`Scrape Error: ${err.message}\n`, {
+          status: 502,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' }
         });
       }
     }
@@ -660,11 +979,25 @@ npx -y github:ami-guru/x402-scraper-engine
       });
       const paymentHeaders = challenge.headers;
 
+      const isInternal = isInternalAuthorized(request, env);
+      const sessionKey = request.headers.get('X-Session-Key')?.trim();
+      let sessionUsed = false;
+      let sessionCreditsLeft = 0;
       let isGraceCall = false;
       let graceRemaining = 0;
       let paymentResponseHeaders: Record<string, string> = {};
 
-      if (!txHash && !paymentSignature) {
+      if (sessionKey && !isInternal) {
+        const sessionRes = await verifyAndConsumeSessionCredit(sessionKey, env, 1);
+        if (sessionRes.valid) {
+          sessionUsed = true;
+          sessionCreditsLeft = sessionRes.creditsRemaining || 0;
+          paymentResponseHeaders['X-Session-Key'] = sessionKey;
+          paymentResponseHeaders['X-Session-Credits-Remaining'] = sessionCreditsLeft.toString();
+        }
+      }
+
+      if (!sessionUsed && !txHash && !paymentSignature && !isInternal) {
         const grace = await checkAndConsumeGraceTier(request, env);
         if (grace.isGrace) {
           isGraceCall = true;
@@ -694,7 +1027,7 @@ npx -y github:ami-guru/x402-scraper-engine
         const b64Resp = typeof btoa === 'function' ? btoa(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })) : Buffer.from(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })).toString('base64');
         paymentResponseHeaders = { 'PAYMENT-RESPONSE': b64Resp };
         settledAt = new Date().toISOString();
-      } else if (!isGraceCall) {
+      } else if (!sessionUsed && !isGraceCall && !isInternal) {
         const requiredUnits = BigInt(amountUnits);
         const verification = await verifyBasePayment(txHash!, env, requiredUnits);
         if (!verification.valid) {
@@ -716,14 +1049,30 @@ npx -y github:ami-guru/x402-scraper-engine
       }
 
       try {
-        const scrapeResult = await scrapeToMarkdown(body.url);
+        const scrapeResult = await scrapeToMarkdown(body.url, env, body.render_js);
         const responsePayload: ScrapeResponse = {
           success: true,
           url: body.url,
           title: scrapeResult.title,
           markdown: scrapeResult.markdown,
           tokens_estimated: scrapeResult.tokensEstimated,
-          payment: isGraceCall
+          bypass_tier: scrapeResult.bypassTier || 'stealth_direct',
+          payment: isInternal
+            ? {
+                mode: 'asot_internal_authorized',
+                network: 'internal',
+                authorized: true,
+                message: 'ASOT internal operations bypass authorized.'
+              } as any
+            : sessionUsed
+            ? {
+                session_key: sessionKey,
+                network: env.NETWORK || 'base',
+                amount: `${amountUsdc} USDC`,
+                asset: 'USDC',
+                settled_at: new Date().toISOString()
+              } as any
+            : isGraceCall
             ? {
                 mode: 'free_grace_tier',
                 calls_remaining: graceRemaining,
@@ -741,13 +1090,546 @@ npx -y github:ami-guru/x402-scraper-engine
 
         const extraHeaders: Record<string, string> = {
           ...paymentResponseHeaders,
-          ...(isGraceCall ? { 'X-Grace-Calls-Remaining': String(graceRemaining) } : {})
+          ...(isGraceCall ? { 'X-Grace-Calls-Remaining': String(graceRemaining) } : {}),
+          'X-Bypass-Tier': scrapeResult.bypassTier || 'stealth_direct'
         };
 
-        ctx.waitUntil(recordUsageMetric(env, 'scrape', !isGraceCall, Number(amountUsdc)));
+        ctx.waitUntil(recordUsageMetric(env, 'scrape', !isGraceCall && !isInternal, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
       } catch (scrapeErr: any) {
         return jsonResponse({ error: 'Scrape Execution Failed', message: scrapeErr.message }, 502);
+      }
+    }
+
+    // 3.5 POST /v1/extract Route (0.030 USDC - Structured JSON Extraction via Edge Llama-3)
+    if (request.method === 'POST' && url.pathname === '/v1/extract') {
+      let body: ExtractRequest;
+      try {
+        body = await request.json();
+      } catch (e) {
+        return jsonResponse({ error: 'Invalid JSON body. Expected { "url": "https://...", "schema": { ... } }' }, 400);
+      }
+
+      if (!body || !body.url) {
+        return jsonResponse({ error: 'Missing required field: "url"' }, 400);
+      }
+
+      const urlCheck = validateUrl(body.url);
+      if (!urlCheck.valid) {
+        return jsonResponse({ error: 'Invalid or prohibited target URL', details: urlCheck.error }, 400);
+      }
+
+      const receiptHeader = request.headers.get('X-Payment-Receipt');
+      const authHeader = request.headers.get('Authorization');
+      const sessionKey = request.headers.get('X-Session-Key')?.trim();
+      let txHash = receiptHeader?.trim();
+
+      if (!txHash && authHeader && authHeader.startsWith('Bearer ')) {
+        txHash = authHeader.substring(7).trim();
+      }
+
+      const amountUsdc = env.EXTRACT_PRICE_USDC || '0.030';
+      const amountUnits = env.EXTRACT_PRICE_UNITS || '30000';
+      const challenge = createStandardPaymentChallenge({
+        amountUsdc,
+        amountUnits,
+        recipient: env.TREASURY_WALLET_ADDRESS,
+        network: env.NETWORK || 'base',
+        chainId: env.CHAIN_ID || 8453,
+        contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900,
+        resourceUrl: `${url.origin}/v1/extract`,
+        resourceDescription: 'Schema-Driven Structured JSON Web Data Extraction via Edge Llama-3 on Base L2',
+        serviceName: 'x402 Scraper Engine',
+        tags: ['extract', 'json', 'schema', 'llama3', 'web3', 'base']
+      });
+
+      const isInternal = isInternalAuthorized(request, env);
+      let isGraceCall = false;
+      let sessionUsed = false;
+      let sessionCreditsLeft = 0;
+
+      // Check session key (requires 6 credits = 0.030 USDC)
+      if (sessionKey && !isInternal) {
+        const sessionRes = await verifyAndConsumeSessionCredit(sessionKey, env, 6);
+        if (sessionRes.valid) {
+          sessionUsed = true;
+          sessionCreditsLeft = sessionRes.creditsRemaining || 0;
+        }
+      }
+
+      if (!sessionUsed && !txHash && !isInternal) {
+        const grace = await checkAndConsumeGraceTier(request, env);
+        if (grace.isGrace) {
+          isGraceCall = true;
+        } else {
+          return jsonResponse(challenge.responseBody, 402, challenge.headers);
+        }
+      }
+
+      if (!sessionUsed && !isGraceCall && !isInternal) {
+        const requiredUnits = BigInt(amountUnits);
+        const verification = await verifyBasePayment(txHash!, env, requiredUnits);
+        if (!verification.valid) {
+          return jsonResponse({ error: 'Payment Verification Failed', details: verification.error }, 402, challenge.headers);
+        }
+        const replayCheck = await checkAndRecordReplay(txHash!, env, {
+          targetUrl: body.url,
+          action: 'extract',
+          sender: verification.sender,
+          amountUnits: verification.amountUnits?.toString(),
+          timestamp: verification.timestamp
+        });
+        if (replayCheck.replayed) {
+          return jsonResponse({ error: 'Replay Detected', message: replayCheck.error || 'Transaction already redeemed.' }, 400);
+        }
+      }
+
+      try {
+        const extractResult = await extractStructuredData(body.url, env, body.schema, body.prompt);
+        await recordUsageMetric(env, 'extract', Boolean(sessionUsed || txHash), sessionUsed || txHash ? parseFloat(amountUsdc) : 0);
+
+        const responsePayload: ExtractResponse = {
+          success: true,
+          url: body.url,
+          title: extractResult.title,
+          data: extractResult.data,
+          tokens_estimated: extractResult.tokensEstimated,
+          payment: isInternal
+            ? {
+                mode: 'asot_internal_authorized',
+                network: 'internal',
+                authorized: true,
+                message: 'ASOT internal operations bypass authorized.'
+              } as any
+            : sessionUsed
+            ? {
+                session_key: sessionKey,
+                network: env.NETWORK || 'base',
+                amount: `${amountUsdc} USDC`,
+                asset: 'USDC',
+                settled_at: new Date().toISOString()
+              }
+            : isGraceCall
+            ? {
+                mode: 'free_grace_tier',
+                network: env.NETWORK || 'base',
+                amount: '0.000 USDC',
+                asset: 'USDC',
+                settled_at: new Date().toISOString()
+              } as any
+            : {
+                tx_hash: txHash!,
+                network: env.NETWORK || 'base',
+                amount: `${amountUsdc} USDC`,
+                asset: 'USDC',
+                settled_at: new Date().toISOString()
+              }
+        };
+
+        const responseHeaders: Record<string, string> = { ...CORS_HEADERS };
+        if (sessionUsed) {
+          responseHeaders['X-Session-Key'] = sessionKey!;
+          responseHeaders['X-Session-Credits-Remaining'] = sessionCreditsLeft.toString();
+        }
+
+        return jsonResponse(responsePayload, 200, responseHeaders);
+      } catch (err: any) {
+        return jsonResponse({ error: 'Extraction Failed', message: err.message }, 502);
+      }
+    }
+
+    // 3.6 POST /v1/tab/deposit Route (Creates or tops up high-speed session tab on Base)
+    if (request.method === 'POST' && url.pathname === '/v1/tab/deposit') {
+      let body: TabDepositRequest = {};
+      try {
+        body = await request.json();
+      } catch (e) {}
+
+      const receiptHeader = request.headers.get('X-Payment-Receipt');
+      const txHash = receiptHeader?.trim();
+
+      if (!txHash) {
+        const challenge = createStandardPaymentChallenge({
+          amountUsdc: '0.500',
+          amountUnits: '500000',
+          recipient: env.TREASURY_WALLET_ADDRESS,
+          network: env.NETWORK || 'base',
+          chainId: env.CHAIN_ID || 8453,
+          contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+          windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900,
+          resourceUrl: `${url.origin}/v1/tab/deposit`,
+          resourceDescription: 'Agent Session Tab Deposit on Base L2 (min 0.10 USDC = 20 scrapes)',
+          serviceName: 'x402 Scraper Engine',
+          tags: ['tab', 'deposit', 'pre-auth', 'session']
+        });
+        return jsonResponse({
+          error: 'Missing X-Payment-Receipt header',
+          message: 'Deposit USDC on Base L2 to open or top up your high-speed session tab (min 0.10 USDC = 20 scrapes).',
+          challenge: challenge.responseBody
+        }, 402, challenge.headers);
+      }
+
+      // Minimum deposit: 0.10 USDC (100,000 units = 20 scrapes)
+      const minDepositUnits = 100000n;
+      const verification = await verifyBasePayment(txHash, env, minDepositUnits);
+      if (!verification.valid) {
+        return jsonResponse({ error: 'Deposit Verification Failed', details: verification.error }, 402);
+      }
+
+      const replayCheck = await checkAndRecordReplay(txHash, env, {
+        action: 'tab_deposit',
+        sender: verification.sender,
+        amountUnits: verification.amountUnits?.toString(),
+        timestamp: verification.timestamp
+      });
+      if (replayCheck.replayed) {
+        return jsonResponse({ error: 'Replay Detected', message: replayCheck.error || 'Transaction already redeemed.' }, 400);
+      }
+
+      const sessionKey = body.session_key?.trim() || `tab_${Math.random().toString(36).substring(2, 10)}_${Date.now()}`;
+      const session = await createOrTopUpSession(sessionKey, txHash, verification.sender!, verification.amountUnits!, env);
+
+      const depositUsdc = Number(verification.amountUnits!) / 1e6;
+      await recordUsageMetric(env, 'scrape', true, depositUsdc);
+
+      const respPayload: TabDepositResponse = {
+        success: true,
+        session_key: session.sessionKey,
+        credits_added: Number(verification.amountUnits! / 5000n),
+        credits_remaining: session.creditsRemaining,
+        amount_usdc: `${depositUsdc.toFixed(4)} USDC`,
+        tx_hash: txHash
+      };
+
+      return jsonResponse(respPayload, 200, {
+        'X-Session-Key': session.sessionKey,
+        'X-Session-Credits-Remaining': session.creditsRemaining.toString()
+      });
+    }
+
+    // 3.7 GET /v1/tab/:sessionKey Route (Query tab balance)
+    if (request.method === 'GET' && url.pathname.startsWith('/v1/tab/')) {
+      const sessionKey = url.pathname.slice(8).trim();
+      if (!sessionKey) {
+        return jsonResponse({ error: 'Missing session_key parameter' }, 400);
+      }
+
+      if (!env.PROCESSED_TXS) {
+        return jsonResponse({ error: 'KV session store not available' }, 500);
+      }
+
+      const raw = await env.PROCESSED_TXS.get(`session:${sessionKey}`);
+      if (!raw) {
+        return jsonResponse({ error: 'Session tab not found or expired', session_key: sessionKey }, 404);
+      }
+
+      const session = JSON.parse(raw);
+      return jsonResponse({
+        success: true,
+        session_key: session.sessionKey,
+        payer: session.payer,
+        credits_remaining: session.creditsRemaining,
+        total_credits: session.totalCredits,
+        amount_usdc: session.amountUsdc,
+        created_at: session.createdAt,
+        last_used_at: session.lastUsedAt || null
+      });
+    }
+
+    // 3.8 POST /v1/crawl Route (0.250 USDC - Recursive Sitemap & Documentation Crawling)
+    if (request.method === 'POST' && url.pathname === '/v1/crawl') {
+      let body: CrawlRequest;
+      try {
+        body = await request.json();
+      } catch (e) {
+        return jsonResponse({ error: 'Invalid JSON body. Expected { "url": "https://...", "limit": 15 }' }, 400);
+      }
+
+      if (!body || !body.url) {
+        return jsonResponse({ error: 'Missing required field: "url"' }, 400);
+      }
+
+      const urlCheck = validateUrl(body.url);
+      if (!urlCheck.valid || !urlCheck.url) {
+        return jsonResponse({ error: 'Prohibited or invalid target URL', details: urlCheck.error }, 400);
+      }
+
+      const receiptHeader = request.headers.get('X-Payment-Receipt');
+      const paymentSignature = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('payment-signature');
+      let txHash = receiptHeader?.trim();
+
+      const amountUsdc = env.CRAWL_PRICE_USDC || '0.250';
+      const amountUnits = env.CRAWL_PRICE_UNITS || '250000'; // 0.250 USDC
+      const challenge = createStandardPaymentChallenge({
+        amountUsdc,
+        amountUnits,
+        recipient: env.TREASURY_WALLET_ADDRESS,
+        network: env.NETWORK || 'base',
+        chainId: env.CHAIN_ID || 8453,
+        contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900,
+        resourceUrl: `${url.origin}/v1/crawl`,
+        resourceDescription: 'Recursive Multi-Page Documentation & Sitemap Crawling (up to 25 pages)',
+        serviceName: 'x402 Scraper Engine',
+        tags: ['crawl', 'documentation', 'sitemap', 'multi-page', 'knowledge-base']
+      });
+
+      const isInternal = isInternalAuthorized(request, env);
+      const sessionKey = request.headers.get('X-Session-Key')?.trim();
+      let sessionUsed = false;
+      let sessionCreditsLeft = 0;
+      let paymentResponseHeaders: Record<string, string> = {};
+
+      if (sessionKey && !isInternal) {
+        // 1 crawl = 50 standard credits (0.250 / 0.005)
+        const sessionRes = await verifyAndConsumeSessionCredit(sessionKey, env, 50);
+        if (sessionRes.valid) {
+          sessionUsed = true;
+          sessionCreditsLeft = sessionRes.creditsRemaining || 0;
+          paymentResponseHeaders['X-Session-Key'] = sessionKey;
+          paymentResponseHeaders['X-Session-Credits-Remaining'] = sessionCreditsLeft.toString();
+        }
+      }
+
+      if (!sessionUsed && !txHash && !paymentSignature && !isInternal) {
+        return jsonResponse(challenge.responseBody, 402, challenge.headers);
+      }
+
+      let settledAt = new Date().toISOString();
+      if (paymentSignature) {
+        const settle = await settleFacilitatorPayment(paymentSignature, challenge.standardPayload.accepts[0]);
+        if (!settle.valid) {
+          return jsonResponse({ error: 'Payment Verification Failed', details: settle.error }, 402, challenge.headers);
+        }
+        txHash = settle.txHash!;
+        const replayCheck = await checkAndRecordReplay(txHash, env, {
+          targetUrl: body.url,
+          action: 'crawl',
+          sender: settle.payer,
+          amountUnits,
+          timestamp: Math.floor(Date.now() / 1000)
+        });
+        if (replayCheck.replayed) {
+          return jsonResponse({ error: 'Replay Detected', message: replayCheck.error || 'Transaction already redeemed.' }, 400);
+        }
+        const b64Resp = typeof btoa === 'function' ? btoa(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })) : Buffer.from(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })).toString('base64');
+        paymentResponseHeaders = { 'PAYMENT-RESPONSE': b64Resp };
+        settledAt = new Date().toISOString();
+      } else if (!sessionUsed && !isInternal) {
+        const verification = await verifyBasePayment(txHash!, env, BigInt(amountUnits));
+        if (!verification.valid) {
+          return jsonResponse({
+            error: 'Payment Verification Failed',
+            details: verification.error,
+            challenge: challenge.responseBody
+          }, 402, challenge.headers);
+        }
+
+        const replayCheck = await checkAndRecordReplay(txHash!, env, {
+          targetUrl: body.url,
+          action: 'crawl',
+          sender: verification.sender,
+          amountUnits: verification.amountUnits?.toString(),
+          timestamp: verification.timestamp
+        });
+
+        if (replayCheck.replayed) {
+          return jsonResponse({ error: 'Replay Detected', message: replayCheck.error || 'Transaction already redeemed.' }, 400);
+        }
+        settledAt = new Date(verification.timestamp! * 1000).toISOString();
+      }
+
+      try {
+        const limit = Math.min(Math.max(1, body.limit || 15), 30);
+        const maxDepth = Math.min(Math.max(1, body.max_depth || 2), 3);
+        const crawlRes = await crawlSiteToMarkdown(body.url, env, limit, maxDepth);
+
+        const responsePayload: CrawlResponse = {
+          success: true,
+          root_url: body.url,
+          pages_crawled: crawlRes.pages.length,
+          total_tokens_estimated: crawlRes.totalTokensEstimated,
+          pages: crawlRes.pages.map(p => ({
+            url: p.url,
+            title: p.title,
+            markdown: p.markdown,
+            tokens_estimated: p.tokensEstimated
+          })),
+          combined_markdown: crawlRes.combinedMarkdown,
+          payment: isInternal
+            ? {
+                mode: 'asot_internal_authorized',
+                network: 'internal',
+                authorized: true,
+                message: 'ASOT internal operations bypass authorized.'
+              } as any
+            : sessionUsed
+            ? {
+                session_key: sessionKey,
+                network: env.NETWORK || 'base',
+                amount: `${amountUsdc} USDC`,
+                asset: 'USDC',
+                settled_at: new Date().toISOString()
+              } as any
+            : {
+                tx_hash: txHash!,
+                network: env.NETWORK || 'base',
+                amount: amountUsdc,
+                asset: 'USDC',
+                settled_at: settledAt
+              }
+        };
+
+        ctx.waitUntil(recordUsageMetric(env, 'crawl', !isInternal, Number(amountUsdc)));
+        return jsonResponse(responsePayload, 200, paymentResponseHeaders);
+      } catch (crawlErr: any) {
+        return jsonResponse({ error: 'Crawl Execution Failed', message: crawlErr.message }, 502);
+      }
+    }
+
+    // 3.9 POST /v1/pdf Route (0.050 USDC - Whitepaper & PDF Text Extraction)
+    if (request.method === 'POST' && url.pathname === '/v1/pdf') {
+      let body: PdfRequest;
+      try {
+        body = await request.json();
+      } catch (e) {
+        return jsonResponse({ error: 'Invalid JSON body. Expected { "url": "https://.../paper.pdf" }' }, 400);
+      }
+
+      if (!body || !body.url) {
+        return jsonResponse({ error: 'Missing required field: "url"' }, 400);
+      }
+
+      const urlCheck = validateUrl(body.url);
+      if (!urlCheck.valid || !urlCheck.url) {
+        return jsonResponse({ error: 'Prohibited or invalid target URL', details: urlCheck.error }, 400);
+      }
+
+      const receiptHeader = request.headers.get('X-Payment-Receipt');
+      const paymentSignature = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('payment-signature');
+      let txHash = receiptHeader?.trim();
+
+      const amountUsdc = env.PDF_PRICE_USDC || '0.050';
+      const amountUnits = env.PDF_PRICE_UNITS || '50000'; // 0.050 USDC
+      const challenge = createStandardPaymentChallenge({
+        amountUsdc,
+        amountUnits,
+        recipient: env.TREASURY_WALLET_ADDRESS,
+        network: env.NETWORK || 'base',
+        chainId: env.CHAIN_ID || 8453,
+        contractAddress: env.USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+        windowSeconds: env.PAYMENT_WINDOW_SECONDS || 900,
+        resourceUrl: `${url.origin}/v1/pdf`,
+        resourceDescription: 'Native Whitepaper & PDF Text Stream to Markdown Extraction',
+        serviceName: 'x402 Scraper Engine',
+        tags: ['pdf', 'whitepaper', 'academic', 'document', 'markdown']
+      });
+
+      const isInternal = isInternalAuthorized(request, env);
+      const sessionKey = request.headers.get('X-Session-Key')?.trim();
+      let sessionUsed = false;
+      let sessionCreditsLeft = 0;
+      let paymentResponseHeaders: Record<string, string> = {};
+
+      if (sessionKey && !isInternal) {
+        // 1 PDF = 10 standard credits (0.050 / 0.005)
+        const sessionRes = await verifyAndConsumeSessionCredit(sessionKey, env, 10);
+        if (sessionRes.valid) {
+          sessionUsed = true;
+          sessionCreditsLeft = sessionRes.creditsRemaining || 0;
+          paymentResponseHeaders['X-Session-Key'] = sessionKey;
+          paymentResponseHeaders['X-Session-Credits-Remaining'] = sessionCreditsLeft.toString();
+        }
+      }
+
+      if (!sessionUsed && !txHash && !paymentSignature && !isInternal) {
+        return jsonResponse(challenge.responseBody, 402, challenge.headers);
+      }
+
+      let settledAt = new Date().toISOString();
+      if (paymentSignature) {
+        const settle = await settleFacilitatorPayment(paymentSignature, challenge.standardPayload.accepts[0]);
+        if (!settle.valid) {
+          return jsonResponse({ error: 'Payment Verification Failed', details: settle.error }, 402, challenge.headers);
+        }
+        txHash = settle.txHash!;
+        const replayCheck = await checkAndRecordReplay(txHash, env, {
+          targetUrl: body.url,
+          action: 'pdf',
+          sender: settle.payer,
+          amountUnits,
+          timestamp: Math.floor(Date.now() / 1000)
+        });
+        if (replayCheck.replayed) {
+          return jsonResponse({ error: 'Replay Detected', message: replayCheck.error || 'Transaction already redeemed.' }, 400);
+        }
+        const b64Resp = typeof btoa === 'function' ? btoa(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })) : Buffer.from(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })).toString('base64');
+        paymentResponseHeaders = { 'PAYMENT-RESPONSE': b64Resp };
+        settledAt = new Date().toISOString();
+      } else if (!sessionUsed && !isInternal) {
+        const verification = await verifyBasePayment(txHash!, env, BigInt(amountUnits));
+        if (!verification.valid) {
+          return jsonResponse({
+            error: 'Payment Verification Failed',
+            details: verification.error,
+            challenge: challenge.responseBody
+          }, 402, challenge.headers);
+        }
+
+        const replayCheck = await checkAndRecordReplay(txHash!, env, {
+          targetUrl: body.url,
+          action: 'pdf',
+          sender: verification.sender,
+          amountUnits: verification.amountUnits?.toString(),
+          timestamp: verification.timestamp
+        });
+
+        if (replayCheck.replayed) {
+          return jsonResponse({ error: 'Replay Detected', message: replayCheck.error || 'Transaction already redeemed.' }, 400);
+        }
+        settledAt = new Date(verification.timestamp! * 1000).toISOString();
+      }
+
+      try {
+        const pdfRes = await scrapeToMarkdown(body.url, env);
+        const filename = urlCheck.url.pathname.split('/').pop() || 'document.pdf';
+
+        const responsePayload: PdfResponse = {
+          success: true,
+          url: body.url,
+          title: pdfRes.title || filename,
+          total_pages: pdfRes.totalPages || 1,
+          markdown: pdfRes.markdown,
+          tokens_estimated: pdfRes.tokensEstimated,
+          payment: isInternal
+            ? {
+                mode: 'asot_internal_authorized',
+                network: 'internal',
+                authorized: true,
+                message: 'ASOT internal operations bypass authorized.'
+              } as any
+            : sessionUsed
+            ? {
+                session_key: sessionKey,
+                network: env.NETWORK || 'base',
+                amount: `${amountUsdc} USDC`,
+                asset: 'USDC',
+                settled_at: new Date().toISOString()
+              } as any
+            : {
+                tx_hash: txHash!,
+                network: env.NETWORK || 'base',
+                amount: amountUsdc,
+                asset: 'USDC',
+                settled_at: settledAt
+              }
+        };
+
+        ctx.waitUntil(recordUsageMetric(env, 'pdf', !isInternal, Number(amountUsdc)));
+        return jsonResponse(responsePayload, 200, paymentResponseHeaders);
+      } catch (pdfErr: any) {
+        return jsonResponse({ error: 'PDF Extraction Failed', message: pdfErr.message }, 502);
       }
     }
 
@@ -807,11 +1689,12 @@ npx -y github:ami-guru/x402-scraper-engine
       });
       const paymentHeaders = challenge.headers;
 
+      const isInternal = isInternalAuthorized(request, env);
       let isGraceCall = false;
       let graceRemaining = 0;
       let paymentResponseHeaders: Record<string, string> = {};
 
-      if (!txHash && !paymentSignature) {
+      if (!txHash && !paymentSignature && !isInternal) {
         const grace = await checkAndConsumeGraceTier(request, env);
         if (grace.isGrace) {
           isGraceCall = true;
@@ -841,7 +1724,7 @@ npx -y github:ami-guru/x402-scraper-engine
         const b64Resp = typeof btoa === 'function' ? btoa(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })) : Buffer.from(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })).toString('base64');
         paymentResponseHeaders = { 'PAYMENT-RESPONSE': b64Resp };
         settledAt = new Date().toISOString();
-      } else if (!isGraceCall) {
+      } else if (!isGraceCall && !isInternal) {
         const requiredUnits = BigInt(amountUnits);
         const verification = await verifyBasePayment(txHash!, env, requiredUnits);
         if (!verification.valid) {
@@ -872,7 +1755,14 @@ npx -y github:ami-guru/x402-scraper-engine
           key_takeaways: digestResult.key_takeaways,
           markdown: digestResult.markdown,
           tokens_estimated: digestResult.tokens_estimated,
-          payment: isGraceCall
+          payment: isInternal
+            ? {
+                mode: 'asot_internal_authorized',
+                network: 'internal',
+                authorized: true,
+                message: 'ASOT internal operations bypass authorized.'
+              } as any
+            : isGraceCall
             ? {
                 mode: 'free_grace_tier',
                 calls_remaining: graceRemaining,
@@ -893,7 +1783,7 @@ npx -y github:ami-guru/x402-scraper-engine
           ...(isGraceCall ? { 'X-Grace-Calls-Remaining': String(graceRemaining) } : {})
         };
 
-        ctx.waitUntil(recordUsageMetric(env, 'digest', !isGraceCall, Number(amountUsdc)));
+        ctx.waitUntil(recordUsageMetric(env, 'digest', !isGraceCall && !isInternal, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
       } catch (digestErr: any) {
         return jsonResponse({ error: 'Digest Synthesis Failed', message: digestErr.message }, 502);
@@ -960,11 +1850,12 @@ npx -y github:ami-guru/x402-scraper-engine
       });
       const paymentHeaders = challenge.headers;
 
+      const isInternal = isInternalAuthorized(request, env);
       let isGraceCall = false;
       let graceRemaining = 0;
       let paymentResponseHeaders: Record<string, string> = {};
 
-      if (!txHash && !paymentSignature) {
+      if (!txHash && !paymentSignature && !isInternal) {
         const grace = await checkAndConsumeGraceTier(request, env);
         if (grace.isGrace) {
           isGraceCall = true;
@@ -994,7 +1885,7 @@ npx -y github:ami-guru/x402-scraper-engine
         const b64Resp = typeof btoa === 'function' ? btoa(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })) : Buffer.from(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })).toString('base64');
         paymentResponseHeaders = { 'PAYMENT-RESPONSE': b64Resp };
         settledAt = new Date().toISOString();
-      } else if (!isGraceCall) {
+      } else if (!isGraceCall && !isInternal) {
         const requiredUnits = BigInt(amountUnits);
         const verification = await verifyBasePayment(txHash!, env, requiredUnits);
         if (!verification.valid) {
@@ -1027,7 +1918,14 @@ npx -y github:ami-guru/x402-scraper-engine
           technical_signals: auditResult.technical_signals,
           markdown: auditResult.markdown,
           tokens_estimated: auditResult.tokens_estimated,
-          payment: isGraceCall
+          payment: isInternal
+            ? {
+                mode: 'asot_internal_authorized',
+                network: 'internal',
+                authorized: true,
+                message: 'ASOT internal operations bypass authorized.'
+              } as any
+            : isGraceCall
             ? {
                 mode: 'free_grace_tier',
                 calls_remaining: graceRemaining,
@@ -1048,7 +1946,7 @@ npx -y github:ami-guru/x402-scraper-engine
           ...(isGraceCall ? { 'X-Grace-Calls-Remaining': String(graceRemaining) } : {})
         };
 
-        ctx.waitUntil(recordUsageMetric(env, 'audit', !isGraceCall, Number(amountUsdc)));
+        ctx.waitUntil(recordUsageMetric(env, 'audit', !isGraceCall && !isInternal, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
       } catch (auditErr: any) {
         return jsonResponse({ error: 'Security Audit Failed', message: auditErr.message }, 502);
@@ -1111,11 +2009,12 @@ npx -y github:ami-guru/x402-scraper-engine
       });
       const searchPaymentHeaders = challenge.headers;
 
+      const isInternal = isInternalAuthorized(request, env);
       let isGraceCall = false;
       let graceRemaining = 0;
       let paymentResponseHeaders: Record<string, string> = {};
 
-      if (!txHash && !paymentSignature) {
+      if (!txHash && !paymentSignature && !isInternal) {
         const grace = await checkAndConsumeGraceTier(request, env);
         if (grace.isGrace) {
           isGraceCall = true;
@@ -1145,7 +2044,7 @@ npx -y github:ami-guru/x402-scraper-engine
         const b64Resp = typeof btoa === 'function' ? btoa(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })) : Buffer.from(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })).toString('base64');
         paymentResponseHeaders = { 'PAYMENT-RESPONSE': b64Resp };
         settledAt = new Date().toISOString();
-      } else if (!isGraceCall) {
+      } else if (!isGraceCall && !isInternal) {
         const requiredUnits = BigInt(amountUnits);
         const verification = await verifyBasePayment(txHash!, env, requiredUnits);
         if (!verification.valid) {
@@ -1173,7 +2072,14 @@ npx -y github:ami-guru/x402-scraper-engine
           query: searchResult.query,
           results: searchResult.results,
           tokens_estimated: searchResult.tokensEstimated,
-          payment: isGraceCall
+          payment: isInternal
+            ? {
+                mode: 'asot_internal_authorized',
+                network: 'internal',
+                authorized: true,
+                message: 'ASOT internal operations bypass authorized.'
+              }
+            : isGraceCall
             ? {
                 mode: 'free_grace_tier',
                 calls_remaining: graceRemaining,
@@ -1194,7 +2100,7 @@ npx -y github:ami-guru/x402-scraper-engine
           ...(isGraceCall ? { 'X-Grace-Calls-Remaining': String(graceRemaining) } : {})
         };
 
-        ctx.waitUntil(recordUsageMetric(env, 'search', !isGraceCall, Number(amountUsdc)));
+        ctx.waitUntil(recordUsageMetric(env, 'search', !isGraceCall && !isInternal, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
       } catch (searchErr: any) {
         return jsonResponse({ error: 'Search Execution Failed', message: searchErr.message || 'Failed to execute web search.' }, 502);
@@ -1250,11 +2156,12 @@ npx -y github:ami-guru/x402-scraper-engine
       });
       const twitterHeaders = challenge.headers;
 
+      const isInternal = isInternalAuthorized(request, env);
       let isGraceCall = false;
       let graceRemaining = 0;
       let paymentResponseHeaders: Record<string, string> = {};
 
-      if (!txHash && !paymentSignature) {
+      if (!txHash && !paymentSignature && !isInternal) {
         const grace = await checkAndConsumeGraceTier(request, env);
         if (grace.isGrace) {
           isGraceCall = true;
@@ -1284,7 +2191,7 @@ npx -y github:ami-guru/x402-scraper-engine
         const b64Resp = typeof btoa === 'function' ? btoa(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })) : Buffer.from(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })).toString('base64');
         paymentResponseHeaders = { 'PAYMENT-RESPONSE': b64Resp };
         settledAt = new Date().toISOString();
-      } else if (!isGraceCall) {
+      } else if (!isGraceCall && !isInternal) {
         const requiredUnits = BigInt(amountUnits);
         const verification = await verifyBasePayment(txHash!, env, requiredUnits);
         if (!verification.valid) {
@@ -1313,7 +2220,14 @@ npx -y github:ami-guru/x402-scraper-engine
           tweets: twitterResult.tweets,
           markdown: twitterResult.markdown,
           tokens_estimated: twitterResult.tokensEstimated,
-          payment: isGraceCall
+          payment: isInternal
+            ? {
+                mode: 'asot_internal_authorized',
+                network: 'internal',
+                authorized: true,
+                message: 'ASOT internal operations bypass authorized.'
+              } as any
+            : isGraceCall
             ? {
                 mode: 'free_grace_tier',
                 calls_remaining: graceRemaining,
@@ -1334,7 +2248,7 @@ npx -y github:ami-guru/x402-scraper-engine
           ...(isGraceCall ? { 'X-Grace-Calls-Remaining': String(graceRemaining) } : {})
         };
 
-        ctx.waitUntil(recordUsageMetric(env, 'twitter_search', !isGraceCall, Number(amountUsdc)));
+        ctx.waitUntil(recordUsageMetric(env, 'twitter_search', !isGraceCall && !isInternal, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
       } catch (twitterErr: any) {
         return jsonResponse({ error: 'Twitter Search Failed', message: twitterErr.message }, 502);
@@ -1391,11 +2305,12 @@ npx -y github:ami-guru/x402-scraper-engine
       });
       const profileHeaders = challenge.headers;
 
+      const isInternal = isInternalAuthorized(request, env);
       let isGraceCall = false;
       let graceRemaining = 0;
       let paymentResponseHeaders: Record<string, string> = {};
 
-      if (!txHash && !paymentSignature) {
+      if (!txHash && !paymentSignature && !isInternal) {
         const grace = await checkAndConsumeGraceTier(request, env);
         if (grace.isGrace) {
           isGraceCall = true;
@@ -1425,7 +2340,7 @@ npx -y github:ami-guru/x402-scraper-engine
         const b64Resp = typeof btoa === 'function' ? btoa(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })) : Buffer.from(JSON.stringify({ success: true, transaction: txHash, network: 'eip155:8453', payer: settle.payer })).toString('base64');
         paymentResponseHeaders = { 'PAYMENT-RESPONSE': b64Resp };
         settledAt = new Date().toISOString();
-      } else if (!isGraceCall) {
+      } else if (!isGraceCall && !isInternal) {
         const requiredUnits = env.TWITTER_PROFILE_PRICE_UNITS ? BigInt(env.TWITTER_PROFILE_PRICE_UNITS) : 30000n;
         const verification = await verifyBasePayment(txHash!, env, requiredUnits);
         if (!verification.valid) {
@@ -1455,7 +2370,14 @@ npx -y github:ami-guru/x402-scraper-engine
           tweets: profileResult.tweets,
           markdown: profileResult.markdown,
           tokens_estimated: profileResult.tokensEstimated,
-          payment: isGraceCall
+          payment: isInternal
+            ? {
+                mode: 'asot_internal_authorized',
+                network: 'internal',
+                authorized: true,
+                message: 'ASOT internal operations bypass authorized.'
+              } as any
+            : isGraceCall
             ? {
                 mode: 'free_grace_tier',
                 calls_remaining: graceRemaining,
@@ -1476,7 +2398,7 @@ npx -y github:ami-guru/x402-scraper-engine
           ...(isGraceCall ? { 'X-Grace-Calls-Remaining': String(graceRemaining) } : {})
         };
 
-        ctx.waitUntil(recordUsageMetric(env, 'twitter_profile', !isGraceCall, Number(amountUsdc)));
+        ctx.waitUntil(recordUsageMetric(env, 'twitter_profile', !isGraceCall && !isInternal, Number(amountUsdc)));
         return jsonResponse(responsePayload, 200, extraHeaders);
       } catch (profileErr: any) {
         return jsonResponse({ error: 'Twitter Profile Lookup Failed', message: profileErr.message }, 502);

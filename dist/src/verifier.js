@@ -2,7 +2,7 @@
 const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const DEFAULT_USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const DEFAULT_PRICE_UNITS = 2000n; // 0.002 USDC (6 decimals)
-const DEFAULT_WINDOW_SECONDS = 900; // 15 minutes
+const DEFAULT_WINDOW_SECONDS = 3600; // 60 minutes
 /**
  * Validates a transaction hash format
  */
@@ -172,34 +172,59 @@ export async function verifyBasePayment(txHash, env, requiredAmountOverrideUnits
     const expectedTreasury = env.TREASURY_WALLET_ADDRESS.toLowerCase();
     const requiredAmountUnits = requiredAmountOverrideUnits || (env.PRICE_USDC_UNITS ? BigInt(env.PRICE_USDC_UNITS) : 20000n);
     const maxAgeSeconds = env.PAYMENT_WINDOW_SECONDS ? Number(env.PAYMENT_WINDOW_SECONDS) : DEFAULT_WINDOW_SECONDS;
-    const rpcUrl = rpcOverride || env.BASE_RPC_URL || 'https://mainnet.base.org';
+    const defaultRpcs = [
+        'https://base-rpc.publicnode.com',
+        'https://1rpc.io/base',
+        'https://developer-access-mainnet.base.org',
+        'https://mainnet.base.org'
+    ];
+    const candidateRpcs = Array.from(new Set([
+        rpcOverride,
+        env.BASE_RPC_URL,
+        ...defaultRpcs
+    ].filter((url) => typeof url === 'string' && url.trim().length > 0)));
+    async function callRpc(method, params) {
+        let lastErrorMsg = 'Unknown RPC error';
+        for (const endpoint of candidateRpcs) {
+            try {
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        jsonrpc: '2.0',
+                        id: 1,
+                        method,
+                        params
+                    })
+                });
+                if (!res.ok) {
+                    lastErrorMsg = `HTTP status ${res.status} from ${endpoint}`;
+                    continue;
+                }
+                const json = await res.json();
+                if (json.error) {
+                    lastErrorMsg = `RPC error from ${endpoint}: ${json.error.message || JSON.stringify(json.error)}`;
+                    continue;
+                }
+                return json.result;
+            }
+            catch (err) {
+                lastErrorMsg = `${endpoint}: ${err.message}`;
+                continue;
+            }
+        }
+        throw new Error(lastErrorMsg);
+    }
     // 1. JSON-RPC Call: eth_getTransactionReceipt
     let receipt = null;
     try {
-        const rpcResponse = await fetch(rpcUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                jsonrpc: '2.0',
-                id: 1,
-                method: 'eth_getTransactionReceipt',
-                params: [cleanTxHash]
-            })
-        });
-        if (!rpcResponse.ok) {
-            return { valid: false, error: `Base RPC request failed with HTTP status ${rpcResponse.status}` };
-        }
-        const rpcJson = await rpcResponse.json();
-        if (rpcJson.error) {
-            return { valid: false, error: `Base RPC error: ${rpcJson.error.message || JSON.stringify(rpcJson.error)}` };
-        }
-        receipt = rpcJson.result;
+        receipt = await callRpc('eth_getTransactionReceipt', [cleanTxHash]);
         if (!receipt) {
             return { valid: false, error: 'Transaction receipt not found. Transaction may still be unconfirmed or dropped.' };
         }
     }
     catch (err) {
-        return { valid: false, error: `Failed to connect to Base RPC: ${err.message}` };
+        return { valid: false, error: `Base RPC request failed across all providers: ${err.message}` };
     }
     // 2. Check Execution Status
     if (receipt.status !== '0x1') {
@@ -209,40 +234,19 @@ export async function verifyBasePayment(txHash, env, requiredAmountOverrideUnits
     let blockTimestamp = 0;
     const blockNumber = parseInt(receipt.blockNumber, 16);
     try {
-        const blockResponse = await fetch(rpcUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                jsonrpc: '2.0',
-                id: 2,
-                method: 'eth_getBlockByHash',
-                params: [receipt.blockHash, false]
-            })
-        });
-        const blockJson = await blockResponse.json();
-        if (blockJson.result && blockJson.result.timestamp) {
-            blockTimestamp = parseInt(blockJson.result.timestamp, 16);
+        const block = await callRpc('eth_getBlockByHash', [receipt.blockHash, false]);
+        if (block && block.timestamp) {
+            blockTimestamp = parseInt(block.timestamp, 16);
         }
     }
-    catch (e) {
-        // If block hash fails, fallback to block number
+    catch (_) {
         try {
-            const blockResponse = await fetch(rpcUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    jsonrpc: '2.0',
-                    id: 3,
-                    method: 'eth_getBlockByNumber',
-                    params: [receipt.blockNumber, false]
-                })
-            });
-            const blockJson = await blockResponse.json();
-            if (blockJson.result && blockJson.result.timestamp) {
-                blockTimestamp = parseInt(blockJson.result.timestamp, 16);
+            const block = await callRpc('eth_getBlockByNumber', [receipt.blockNumber, false]);
+            if (block && block.timestamp) {
+                blockTimestamp = parseInt(block.timestamp, 16);
             }
         }
-        catch (_) {
+        catch (__) {
             // Ignored, handled below
         }
     }
@@ -317,4 +321,73 @@ export async function checkAndRecordReplay(txHash, env, metadata) {
     catch (err) {
         return { replayed: false, error: `KV error: ${err.message}` };
     }
+}
+/**
+ * Verifies and decrements credits from an active session tab
+ */
+export async function verifyAndConsumeSessionCredit(sessionKey, env, requiredCredits = 1) {
+    const cleanKey = sessionKey.trim();
+    const kvKey = `session:${cleanKey}`;
+    try {
+        if (!env.PROCESSED_TXS) {
+            return { valid: false, error: 'KV session store not available.' };
+        }
+        const raw = await env.PROCESSED_TXS.get(kvKey);
+        if (!raw) {
+            return { valid: false, error: 'Session key not found or expired. Please initialize tab via POST /v1/tab/deposit.' };
+        }
+        const session = JSON.parse(raw);
+        if (session.creditsRemaining < requiredCredits) {
+            return {
+                valid: false,
+                error: `Insufficient session credits. Required: ${requiredCredits}, Remaining: ${session.creditsRemaining}. Please top up via POST /v1/tab/deposit.`
+            };
+        }
+        session.creditsRemaining -= requiredCredits;
+        session.lastUsedAt = new Date().toISOString();
+        // 7 day session TTL
+        await env.PROCESSED_TXS.put(kvKey, JSON.stringify(session), { expirationTtl: 604800 });
+        return {
+            valid: true,
+            sender: session.payer,
+            isSession: true,
+            sessionKey: cleanKey,
+            creditsRemaining: session.creditsRemaining,
+            amountUnits: BigInt(requiredCredits * 5000), // 0.005 per credit in units
+            timestamp: Math.floor(Date.now() / 1000)
+        };
+    }
+    catch (err) {
+        return { valid: false, error: `Session verification error: ${err.message}` };
+    }
+}
+/**
+ * Creates or tops up an agent session tab with verified USDC on Base
+ */
+export async function createOrTopUpSession(sessionKey, txHash, payer, amountUnits, env) {
+    const cleanKey = sessionKey.trim();
+    const kvKey = `session:${cleanKey}`;
+    // 1 credit = 0.005 USDC (5,000 units)
+    const creditsAdded = Number(amountUnits / 5000n);
+    const amountUsdc = (Number(amountUnits) / 1e6).toFixed(4);
+    let session = {
+        sessionKey: cleanKey,
+        payer,
+        creditsRemaining: creditsAdded,
+        totalCredits: creditsAdded,
+        amountUsdc,
+        createdAt: new Date().toISOString()
+    };
+    if (env.PROCESSED_TXS) {
+        const existing = await env.PROCESSED_TXS.get(kvKey);
+        if (existing) {
+            const prev = JSON.parse(existing);
+            session.creditsRemaining = (prev.creditsRemaining || 0) + creditsAdded;
+            session.totalCredits = (prev.totalCredits || 0) + creditsAdded;
+            session.amountUsdc = (parseFloat(prev.amountUsdc || '0') + parseFloat(amountUsdc)).toFixed(4);
+            session.createdAt = prev.createdAt;
+        }
+        await env.PROCESSED_TXS.put(kvKey, JSON.stringify(session), { expirationTtl: 604800 });
+    }
+    return session;
 }

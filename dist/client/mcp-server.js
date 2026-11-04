@@ -134,6 +134,38 @@ class X402ScraperMcpServer {
                         },
                         required: ['username']
                     }
+                },
+                {
+                    name: 'recursive_doc_crawl',
+                    description: 'Crawls multi-page documentation trees or sitemaps (up to 25 pages) into a unified Markdown knowledge base with Table of Contents. Automatically handles HTTP 402 microtransactions (0.250 USDC on Base).',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            url: {
+                                type: 'string',
+                                description: 'Root documentation or sitemap URL to crawl.'
+                            },
+                            max_pages: {
+                                type: 'number',
+                                description: 'Max pages to crawl (1-25, default 10).'
+                            }
+                        },
+                        required: ['url']
+                    }
+                },
+                {
+                    name: 'extract_pdf_markdown',
+                    description: 'Extracts clean, token-efficient Markdown from whitepapers, academic research, and financial PDF documents directly at the edge. Automatically handles HTTP 402 microtransactions (0.050 USDC on Base).',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            url: {
+                                type: 'string',
+                                description: 'URL of the PDF document.'
+                            }
+                        },
+                        required: ['url']
+                    }
                 }
             ]
         }));
@@ -216,6 +248,32 @@ class X402ScraperMcpServer {
                 }
                 catch (error) {
                     return { isError: true, content: [{ type: 'text', text: `Twitter Profile Error: ${error.message}` }] };
+                }
+            }
+            if (toolName === 'recursive_doc_crawl') {
+                const args = request.params.arguments;
+                if (!args || !args.url) {
+                    throw new McpError(ErrorCode.InvalidParams, 'Missing "url" parameter.');
+                }
+                try {
+                    const result = await this.executeCrawlWithAutoPayment(args.url, args.max_pages);
+                    return { content: [{ type: 'text', text: result }] };
+                }
+                catch (error) {
+                    return { isError: true, content: [{ type: 'text', text: `Crawl Error: ${error.message}` }] };
+                }
+            }
+            if (toolName === 'extract_pdf_markdown') {
+                const args = request.params.arguments;
+                if (!args || !args.url) {
+                    throw new McpError(ErrorCode.InvalidParams, 'Missing "url" parameter.');
+                }
+                try {
+                    const result = await this.executePdfWithAutoPayment(args.url);
+                    return { content: [{ type: 'text', text: result }] };
+                }
+                catch (error) {
+                    return { isError: true, content: [{ type: 'text', text: `PDF Extract Error: ${error.message}` }] };
                 }
             }
             throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${toolName}`);
@@ -530,6 +588,108 @@ class X402ScraperMcpServer {
         }
         const errText = await initialRes.text();
         throw new Error(`Twitter profile lookup returned HTTP ${initialRes.status}: ${errText}`);
+    }
+    /**
+     * Performs multi-page documentation crawl, auto-settling 0.250 USDC on Base if 402 is returned
+     */
+    async executeCrawlWithAutoPayment(targetUrl, maxPages) {
+        const endpoint = `${WORKER_URL.replace(/\/$/, '')}/v1/crawl`;
+        const payload = { url: targetUrl, maxPages: maxPages || 10 };
+        let initialRes = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (initialRes.status === 200) {
+            const data = await initialRes.json();
+            return formatMarkdownOutput(data);
+        }
+        if (initialRes.status === 402) {
+            const paymentData = await initialRes.json().catch(() => ({}));
+            const recipient = initialRes.headers.get('X-Payment-To') ||
+                paymentData.payment?.recipient ||
+                process.env.TREASURY_WALLET_ADDRESS;
+            const amount = initialRes.headers.get('X-Payment-Amount') || paymentData.payment?.amount || '0.250';
+            const tokenAddress = initialRes.headers.get('X-Payment-Asset-Address') ||
+                paymentData.payment?.contractAddress ||
+                DEFAULT_USDC_BASE;
+            if (!recipient || recipient === '0x0000000000000000000000000000000000000000') {
+                throw new Error('HTTP 402 received, but treasury address is not configured on worker.');
+            }
+            if (!AGENT_PRIVATE_KEY || AGENT_PRIVATE_KEY.startsWith('0x000000000000')) {
+                throw new Error(`HTTP 402 Payment Required: Documentation crawl charges ${amount} USDC on Base.\n` +
+                    `Recipient: ${recipient}\n` +
+                    `Please configure a funded AGENT_PRIVATE_KEY in .env to proceed.`);
+            }
+            const txHash = await this.sendUsdcPayment(recipient, amount, tokenAddress);
+            const paidRes = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Payment-Receipt': txHash
+                },
+                body: JSON.stringify(payload)
+            });
+            if (!paidRes.ok) {
+                const errorBody = await paidRes.json().catch(() => ({}));
+                throw new Error(`Payment submitted (${txHash}), but worker returned HTTP ${paidRes.status}: ${errorBody.details || errorBody.message || errorBody.error || paidRes.statusText}`);
+            }
+            const finalData = await paidRes.json();
+            return formatMarkdownOutput(finalData);
+        }
+        const errText = await initialRes.text();
+        throw new Error(`Documentation crawl returned HTTP ${initialRes.status}: ${errText}`);
+    }
+    /**
+     * Performs PDF stream extraction, auto-settling 0.050 USDC on Base if 402 is returned
+     */
+    async executePdfWithAutoPayment(targetUrl) {
+        const endpoint = `${WORKER_URL.replace(/\/$/, '')}/v1/pdf`;
+        const payload = { url: targetUrl };
+        let initialRes = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (initialRes.status === 200) {
+            const data = await initialRes.json();
+            return formatMarkdownOutput(data);
+        }
+        if (initialRes.status === 402) {
+            const paymentData = await initialRes.json().catch(() => ({}));
+            const recipient = initialRes.headers.get('X-Payment-To') ||
+                paymentData.payment?.recipient ||
+                process.env.TREASURY_WALLET_ADDRESS;
+            const amount = initialRes.headers.get('X-Payment-Amount') || paymentData.payment?.amount || '0.050';
+            const tokenAddress = initialRes.headers.get('X-Payment-Asset-Address') ||
+                paymentData.payment?.contractAddress ||
+                DEFAULT_USDC_BASE;
+            if (!recipient || recipient === '0x0000000000000000000000000000000000000000') {
+                throw new Error('HTTP 402 received, but treasury address is not configured on worker.');
+            }
+            if (!AGENT_PRIVATE_KEY || AGENT_PRIVATE_KEY.startsWith('0x000000000000')) {
+                throw new Error(`HTTP 402 Payment Required: PDF extraction charges ${amount} USDC on Base.\n` +
+                    `Recipient: ${recipient}\n` +
+                    `Please configure a funded AGENT_PRIVATE_KEY in .env to proceed.`);
+            }
+            const txHash = await this.sendUsdcPayment(recipient, amount, tokenAddress);
+            const paidRes = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Payment-Receipt': txHash
+                },
+                body: JSON.stringify(payload)
+            });
+            if (!paidRes.ok) {
+                const errorBody = await paidRes.json().catch(() => ({}));
+                throw new Error(`Payment submitted (${txHash}), but worker returned HTTP ${paidRes.status}: ${errorBody.details || errorBody.message || errorBody.error || paidRes.statusText}`);
+            }
+            const finalData = await paidRes.json();
+            return formatMarkdownOutput(finalData);
+        }
+        const errText = await initialRes.text();
+        throw new Error(`PDF extraction returned HTTP ${initialRes.status}: ${errText}`);
     }
     /**
      * Signs and broadcasts USDC transfer on Base

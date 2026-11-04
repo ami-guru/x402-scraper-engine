@@ -1,5 +1,5 @@
 name: x402-scraper-engine
-version: 1.4.1
+version: 1.6.0
 description: Production HTTP 402 Agent Intelligence Suite - Scraper ($0.005), Edge LLM Digest ($0.025), Security Audit ($0.080), Deep Search ($0.050), and Twitter/X Intelligence ($0.050) on Base L2
 repository: https://github.com/ami-guru/x402-scraper-engine
 homepage: https://getguruautomations.com
@@ -88,3 +88,40 @@ tools:
           description: The Twitter handle/username.
       required:
         - username
+  - name: recursive_doc_crawl
+    description: Crawls multi-page documentation trees or sitemaps (up to 25 pages) into a unified Markdown knowledge base with Table of Contents (0.250 USDC).
+    parameters:
+      type: object
+      properties:
+        url:
+          type: string
+          description: Root documentation or sitemap URL.
+        max_pages:
+          type: number
+          description: Max pages to crawl (1-25, default 10).
+      required:
+        - url
+  - name: extract_pdf_markdown
+    description: Extracts clean Markdown from whitepapers and academic PDF documents directly at the edge (0.050 USDC).
+    parameters:
+      type: object
+      properties:
+        url:
+          type: string
+          description: URL of the PDF document.
+      required:
+        - url
+  - name: extract_structured_json
+    description: Extracts schema-validated structured JSON from any webpage using Edge Llama-3 (0.030 USDC).
+    parameters:
+      type: object
+      properties:
+        url:
+          type: string
+          description: The webpage URL to extract from.
+        schema:
+          type: object
+          description: Target JSON schema describing requested fields.
+      required:
+        - url
+        - schema

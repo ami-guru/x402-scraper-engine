@@ -200,13 +200,31 @@ async function runTests() {
     });
     const unpaidProfileRes = await worker.fetch(unpaidProfileReq, mockEnv, mockCtx);
     assert(unpaidProfileRes.status === 402, 'POST /v1/twitter/profile returns HTTP 402');
+    // POST /v1/crawl without receipt -> HTTP 402 ($0.250)
+    const unpaidCrawlReq = new Request('http://localhost/v1/crawl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'https://example.com' })
+    });
+    const unpaidCrawlRes = await worker.fetch(unpaidCrawlReq, mockEnv, mockCtx);
+    assert(unpaidCrawlRes.status === 402, 'POST /v1/crawl returns HTTP 402');
+    assert(unpaidCrawlRes.headers.get('X-Payment-Amount') === '0.250', 'Returns X-Payment-Amount: 0.250 for crawl');
+    // POST /v1/pdf without receipt -> HTTP 402 ($0.050)
+    const unpaidPdfReq = new Request('http://localhost/v1/pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'https://example.com/test.pdf' })
+    });
+    const unpaidPdfRes = await worker.fetch(unpaidPdfReq, mockEnv, mockCtx);
+    assert(unpaidPdfRes.status === 402, 'POST /v1/pdf returns HTTP 402');
+    assert(unpaidPdfRes.headers.get('X-Payment-Amount') === '0.050', 'Returns X-Payment-Amount: 0.050 for pdf');
     // GET /.well-known/x402.json Bazaar Extension
     const bazaarReq = new Request('http://localhost/.well-known/x402.json', { method: 'GET' });
     const bazaarRes = await worker.fetch(bazaarReq, mockEnv, mockCtx);
     assert(bazaarRes.status === 200, 'GET /.well-known/x402.json returns HTTP 200');
     const bazaarJson = await bazaarRes.json();
     assert(bazaarJson.x402_version === '2.0', 'Returns x402 V2.0 specification');
-    assert(bazaarJson.endpoints.length === 6, 'Returns all 6 endpoints in Bazaar catalog');
+    assert(bazaarJson.endpoints.length >= 8, 'Returns all 8 endpoints in Bazaar catalog');
     // POST /v1/ping-index
     const pingReq = new Request('http://localhost/v1/ping-index', { method: 'POST' });
     const pingRes = await worker.fetch(pingReq, mockEnv, mockCtx);

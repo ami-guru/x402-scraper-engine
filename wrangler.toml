@@ -15,6 +15,10 @@ preview_id = "b51912cf95a745bfbeb83eada646d6b1"
 [ai]
 binding = "AI"
 
+# Cloudflare Browser Rendering Binding
+[browser]
+binding = "MYBROWSER"
+
 # Environment Variables
 [vars]
 NETWORK = "base"
@@ -34,11 +38,15 @@ TWITTER_SEARCH_PRICE_USDC = "0.050"
 TWITTER_SEARCH_PRICE_UNITS = "50000" # 0.050 * 10^6
 TWITTER_PROFILE_PRICE_USDC = "0.030"
 TWITTER_PROFILE_PRICE_UNITS = "30000" # 0.030 * 10^6
-PAYMENT_WINDOW_SECONDS = 900 # 15 minutes max receipt age
+PDF_PRICE_USDC = "0.050"
+PDF_PRICE_UNITS = "50000" # 0.050 * 10^6
+CRAWL_PRICE_USDC = "0.250"
+CRAWL_PRICE_UNITS = "250000" # 0.250 * 10^6
+PAYMENT_WINDOW_SECONDS = 3600 # 60 minutes max receipt age
 REPLAY_EXPIRATION_SECONDS = 86400 # 24 hours in KV
 
 # Base RPC Endpoint (Public or private provider)
-BASE_RPC_URL = "https://mainnet.base.org"
+BASE_RPC_URL = "https://base-rpc.publicnode.com"
 
 # Treasury Wallet - User Receiving Address on Base L2
 TREASURY_WALLET_ADDRESS = "0x4107f297256E00F32873f45F50A35a902c1c2034"

@@ -10,7 +10,7 @@ export async function synthesizeDigest(
   focus?: string
 ): Promise<Omit<DigestResponse, 'payment' | 'success'>> {
   // 1. Scrape raw page to clean Markdown
-  const scraped = await scrapeToMarkdown(url);
+  const scraped = await scrapeToMarkdown(url, env);
   const truncatedContent = scraped.markdown.slice(0, 12000); // Pass up to ~3000 tokens to edge LLM
 
   let summary = '';
@@ -102,7 +102,7 @@ export async function auditSecuritySignal(
   contractAddress?: string
 ): Promise<Omit<AuditResponse, 'payment' | 'success'>> {
   const parsedUrl = new URL(url);
-  const scraped = await scrapeToMarkdown(url);
+  const scraped = await scrapeToMarkdown(url, env);
 
   // 1. Technical Signals
   const hasSsl = parsedUrl.protocol === 'https:';
@@ -185,3 +185,69 @@ export async function auditSecuritySignal(
     tokens_estimated: estimateTokens(md)
   };
 }
+
+/**
+ * Extracts structured JSON adhering strictly to a user schema using Cloudflare Workers AI (Llama 3)
+ */
+export async function extractStructuredData(
+  url: string,
+  env: Env,
+  targetSchema?: Record<string, any>,
+  customPrompt?: string
+): Promise<{ title?: string; data: any; tokensEstimated: number }> {
+  // 1. Scrape raw page to clean Markdown
+  const scraped = await scrapeToMarkdown(url, env);
+  const truncatedContent = scraped.markdown.slice(0, 14000); // Pass up to ~3500 tokens
+
+  let extractedData: any = null;
+
+  // 2. Execute Edge LLM (Llama 3 on Cloudflare Workers AI)
+  if (env.AI && typeof env.AI.run === 'function') {
+    try {
+      const schemaStr = targetSchema ? JSON.stringify(targetSchema, null, 2) : '{"summary": "string", "key_facts": "array"}';
+      const prompt = `You are a high-precision data extraction engine. Analyze the following webpage content and extract the requested data.
+Return ONLY a valid JSON object matching the requested schema. Do NOT include markdown code fences (\`\`\`json), explanations, or conversational filler. Output raw JSON only.
+
+${customPrompt ? `EXTRACTION INSTRUCTIONS: ${customPrompt}\n` : ''}
+TARGET JSON SCHEMA:
+${schemaStr}
+
+WEBPAGE TITLE: ${scraped.title}
+SOURCE URL: ${url}
+
+CONTENT:
+${truncatedContent}`;
+
+      const aiRes: any = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+        prompt,
+        max_tokens: 800,
+        temperature: 0.1
+      });
+
+      const responseText = aiRes?.response || '';
+      const jsonMatch = responseText.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+      if (jsonMatch) {
+        extractedData = JSON.parse(jsonMatch[0]);
+      }
+    } catch (aiErr) {
+      // Fallback below
+    }
+  }
+
+  // 3. Fallback if AI is unconfigured or output parse failed
+  if (!extractedData) {
+    extractedData = {
+      title: scraped.title,
+      url,
+      extracted_at: new Date().toISOString(),
+      content_sample: scraped.markdown.slice(0, 500)
+    };
+  }
+
+  return {
+    title: scraped.title,
+    data: extractedData,
+    tokensEstimated: scraped.tokensEstimated
+  };
+}
+
